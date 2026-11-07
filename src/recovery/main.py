@@ -17,9 +17,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from recovery.bot_factory import build_dispatcher
 from recovery.config import get_settings
 from recovery.db.engine import make_engine, make_session_factory, wait_for_db
+from recovery.domain import PromptKind
 from recovery.health import start_health_server
 from recovery.logging_setup import setup_logging
 from recovery.scheduler.service import CheckinScheduler
+from recovery.telegram.routers.reports import send_session_brief
 
 logger = logging.getLogger("recovery")
 
@@ -27,7 +29,11 @@ BOT_COMMANDS = [
     BotCommand(command="morning", description="Утренний опрос"),
     BotCommand(command="evening", description="Вечерний опрос"),
     BotCommand(command="now", description="Отметить состояние сейчас"),
+    BotCommand(command="discuss", description="Добавить пункт для сессии"),
+    BotCommand(command="session", description="Сводка к сессии"),
+    BotCommand(command="week", description="Записи за неделю (файл)"),
     BotCommand(command="settings", description="Настройки"),
+    BotCommand(command="privacy", description="Данные и приватность"),
     BotCommand(command="help", description="Подсказка"),
 ]
 
@@ -76,12 +82,15 @@ async def run() -> None:
         session_factory,
         reminder_delay_minutes=settings.reminder_delay_minutes,
         catchup_window_minutes=settings.catchup_window_minutes,
+        extra_senders={PromptKind.SESSION_BRIEF: send_session_brief},
     )
     dp = build_dispatcher(
         owner_id=settings.owner_user_id,
         session_factory=session_factory,
         default_timezone=settings.default_timezone,
         settings_changed=scheduler.reschedule,
+        user_deleted=scheduler.forget,
+        emergency_number=settings.emergency_number,
     )
     try:
         await ensure_polling_is_safe(bot)

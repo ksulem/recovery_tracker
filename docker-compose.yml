@@ -35,6 +35,7 @@ services:
       RECOVERY_DATABASE_URL: *db-url
       RECOVERY_LOG_LEVEL: ${RECOVERY_LOG_LEVEL:-INFO}
       RECOVERY_DEFAULT_TIMEZONE: ${RECOVERY_DEFAULT_TIMEZONE:-UTC}
+      RECOVERY_EMERGENCY_NUMBER: ${RECOVERY_EMERGENCY_NUMBER:-112}
     depends_on:
       migrate:
         condition: service_completed_successfully

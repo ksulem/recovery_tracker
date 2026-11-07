@@ -141,6 +141,13 @@ class CheckinScheduler:
             )
         logger.info("scheduled %d jobs", len(self.scheduler.get_jobs()))
 
+    async def forget(self, user_id: Any) -> None:
+        """Drop all jobs of a deleted user."""
+        prefix = f"{user_id}:"
+        for job in self.scheduler.get_jobs():
+            if job.id.startswith(prefix):
+                job.remove()
+
     async def catch_up(self) -> None:
         """Send today's morning/evening prompt if it was missed during downtime."""
         async with self.session_factory() as session:
