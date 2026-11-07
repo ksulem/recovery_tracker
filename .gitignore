@@ -33,3 +33,6 @@ exports/
 .idea/
 .vscode/
 .DS_Store
+
+# Claude Code personal settings (local permissions)
+.claude/settings.local.json

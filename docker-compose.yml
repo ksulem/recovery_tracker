@@ -1,11 +1,16 @@
-# Runs on the VM shared with watering-system, as a fully separate Compose
-# project. Nothing here changes watering-system: Postgres is NOT defined here —
-# the bot uses watering's existing Postgres container (separate database
-# "recovery", separate role) by joining that project's existing Docker network
-# as an external network. See README → Deployment.
+# Self-contained setup: Postgres, migrations and the bot in one Compose
+# project. Everything you need is in .env (see .env.example); then:
 #
-# All variables are RECOVERY_-prefixed: compose lets exported shell variables
-# override .env, and watering-system uses the unprefixed names.
+#   docker compose up -d --build
+#
+# No ports are published: the bot only makes outbound connections to Telegram,
+# and Postgres is reachable only from the bot's own Docker network.
+#
+# Already running Postgres in another Compose project on the same server?
+# See docker-compose.shared.yml.
+#
+# All variables are RECOVERY_-prefixed so they can't clash with other projects'
+# variables on the same machine.
 name: recovery
 
 x-logging: &default-logging
@@ -14,16 +19,41 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
-x-db-url: &db-url postgresql+asyncpg://recovery_app:${RECOVERY_DB_PASSWORD:?RECOVERY_DB_PASSWORD is required}@${RECOVERY_PG_HOST:-timescaledb}:5432/recovery
+x-db-url: &db-url postgresql+asyncpg://recovery_app:${RECOVERY_DB_PASSWORD:?RECOVERY_DB_PASSWORD is required}@db:5432/recovery
 
 services:
+  db:
+    image: postgres:16-alpine
+    logging: *default-logging
+    environment:
+      # Applied only when the data volume is created for the first time.
+      # Changing the password later needs ALTER ROLE as well (see README).
+      POSTGRES_USER: recovery_app
+      POSTGRES_PASSWORD: ${RECOVERY_DB_PASSWORD:?RECOVERY_DB_PASSWORD is required}
+      POSTGRES_DB: recovery
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recovery_app -d recovery"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Small database, one user: modest limits keep it friendly to a 1 GB VPS.
+    command: ["postgres", "-c", "max_connections=20", "-c", "shared_buffers=32MB"]
+    mem_limit: 256m
+    restart: unless-stopped
+
   migrate:
     build: .
     command: ["alembic", "upgrade", "head"]
     logging: *default-logging
     environment:
       RECOVERY_DATABASE_URL: *db-url
-    networks: [pg]
+    depends_on:
+      db:
+        condition: service_healthy
     restart: "no"
 
   bot:
@@ -37,6 +67,8 @@ services:
       RECOVERY_DEFAULT_TIMEZONE: ${RECOVERY_DEFAULT_TIMEZONE:-UTC}
       RECOVERY_EMERGENCY_NUMBER: ${RECOVERY_EMERGENCY_NUMBER:-112}
     depends_on:
+      db:
+        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     healthcheck:
@@ -44,14 +76,10 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-    # Hard cap on a 1 GB VM shared with the watering stack: if this bot leaks,
-    # it gets OOM-killed and restarted instead of starving the other services.
+      start_period: 60s
+    # Startup peaks around 120 MB, steady state is ~50 MB.
     mem_limit: 160m
     restart: unless-stopped
-    # No ports are published; the bot only makes outbound connections.
-    networks: [pg]
 
-networks:
-  pg:
-    external: true
-    name: ${RECOVERY_PG_NETWORK:-plant-monitor_default}
+volumes:
+  db-data:
