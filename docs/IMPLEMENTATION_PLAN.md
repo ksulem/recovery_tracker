@@ -39,7 +39,7 @@ One small Python process (aiogram 3) + the existing Postgres server. No microser
 recovery_tracker/
 ├── pyproject.toml              # deps; ruff, mypy, pytest config
 ├── Dockerfile
-├── docker-compose.yml          # bot + migrate, joins external network pg-shared
+├── docker-compose.yml          # bot + migrate, joins watering's network as external
 ├── alembic/                    # migrations (own version table in the recovery DB)
 ├── scripts/
 │   ├── create_db.sql           # one-time: role + database on the shared server
@@ -78,34 +78,39 @@ Key choices:
 
 Facts from `ksulem/watering-system` (`dev` branch): Postgres runs as the `timescaledb` service (pg16, `max_connections=40`, `shared_buffers=128MB`), DB `plantmonitor`, superuser `plantuser`, compose project `plant-monitor`. The VM has 1 OCPU / 1 GB RAM.
 
-**Database and role** (`scripts/create_db.sql`, run once as `plantuser`):
+**Rule: recovery-tracker doesn't change anything that belongs to watering-system** — not its compose file, `.env`, database, network or backup bucket. The one agreed exception is the security fix below, made in the watering-system repo itself.
+
+**Isolation on a shared VM:**
+- Own Compose project (`name: recovery`), own directory and `.env` on the VM.
+- All variables are `RECOVERY_`-prefixed. watering-system uses `BOT_TOKEN` / `OWNER_USER_ID` / `DATABASE_URL`, and docker compose lets exported shell variables override `.env`, so unprefixed names could silently pick up the watering bot's values.
+- The bot refuses to start if its token has a webhook configured. That would mean it's the watering bot's token, and polling would require deleting that webhook.
+
+**Database and role** (`scripts/create_db.sql`, run once as `plantuser`). It only creates a role and a database:
 
 ```sql
 CREATE ROLE recovery_app LOGIN PASSWORD :'recovery_password';
 CREATE DATABASE recovery OWNER recovery_app TEMPLATE template0 ENCODING 'UTF8';
 REVOKE CONNECT ON DATABASE recovery FROM PUBLIC;
 GRANT  CONNECT ON DATABASE recovery TO recovery_app;
--- keep recovery_app out of the plant DB (all watering services use plantuser, so this changes nothing for them)
-REVOKE CONNECT ON DATABASE plantmonitor FROM PUBLIC;
 ALTER DATABASE recovery SET timezone TO 'UTC';
 ```
 
 - `template0` keeps the new DB free of the `timescaledb` extension (not needed here).
-- `recovery_app` owns the DB and runs Alembic itself; it is not a superuser.
+- `recovery_app` owns the DB and runs Alembic itself; it is not a superuser and has no privileges on `plantmonitor` tables.
 
-**Networking:** create one external Docker network `pg-shared` (`docker network create pg-shared`). Watering's `timescaledb` service joins it (a two-line change in watering-system's compose: `networks: [default, pg-shared]`). The recovery bot joins **only** `pg-shared` — it reaches Postgres at `timescaledb:5432` and cannot see Mosquitto, the API or anything else of the plant stack. (Alternative without touching watering-system: join `plant-monitor_default` as an external network — simpler, but couples to that project's network lifecycle and exposes its other services.)
+**Networking:** the bot joins watering's existing network (`plant-monitor_default`, configurable via `RECOVERY_PG_NETWORK`) as an *external* network and reaches Postgres at `timescaledb:5432`. Joining a network doesn't modify it. No ports are published by the bot.
 
 **Resources:**
 - SQLAlchemy pool `pool_size=2, max_overflow=2` (server has 40 connections total).
-- `mem_limit: 160m` for the bot. Before deploying, check headroom with `docker stats` / `free -m` on the VM — existing limits already add up to more than 1 GB, so measure real usage. If there's no room, this is another reason for the planned move to the larger Ampere shape.
-- Reuse the log rotation anchor (`json-file`, 10 MB × 3).
+- `mem_limit: 160m` for the bot. Before deploying, check headroom with `docker stats` / `free -m` on the VM — existing limits already add up to more than 1 GB, so measure real usage.
+- Own log rotation (`json-file`, 10 MB × 3).
 
 **Security notes for sensitive data on a shared server:**
-- watering-system's compose publishes `5432:5432` ("close externally after setup") and Docker-published ports bypass the host's iptables `INPUT` chain, so only the OCI security list protects it. Since health/emotional data will live there, remove that port mapping (the recovery bot doesn't need it — it uses the Docker network) or at least confirm 5432 is closed in the security list.
-- `plantuser` is a superuser and can read the recovery DB. Acceptable for a single-owner box; keep the watering `.env` as protected as the recovery one.
-- Upgrading/restarting watering's `timescaledb` container also restarts the recovery bot's database — the bot must survive DB reconnects (pool `pre_ping=True`, retries on startup).
+- watering-system published `5432:5432` on all interfaces, and Docker-published ports bypass the host's iptables `INPUT` chain. **Fixed in watering-system** (`fix/db-port-loopback-only`, merged to its `dev`): now `127.0.0.1:5432:5432`. No watering service used the host port, and psql or an SSH tunnel on the VM still work.
+- `plantuser` is a superuser and can read the recovery DB. Acceptable for a single-owner box.
+- Restarting watering's `timescaledb` container also restarts the recovery database — the bot survives reconnects (pool `pre_ping=True`, waits for the DB on startup).
 
-**Backups:** watering-system's `scripts/backup-db.sh` dumps only `plantmonitor` and has TimescaleDB-specific restore steps. Add `scripts/backup-recovery-db.sh` in this repo, adapted from it: `pg_dump -Fc -d recovery`, `pg_restore --list` integrity check, **encryption with `age` before upload** (this data is more sensitive than sensor readings), upload under a separate `recovery/` prefix in the Object Storage bucket with its own lifecycle rule, MD5 verification. Test a restore once.
+**Backups:** `scripts/backup-recovery-db.sh`, adapted from watering's script: `pg_dump -Fc -d recovery` as `recovery_app`, `pg_restore --list` integrity check, **`age` encryption** (this data is more sensitive than sensor readings), encrypted copies kept in `/var/backups/recovery`. Off-site upload only to a bucket set in `BUCKET` — not watering's bucket. Test a restore once.
 
 ### 1.2 Scheduler — cron jobs, not a per-minute tick
 
@@ -179,9 +184,9 @@ Estimates assume one developer part-time (~10–15 h/week). Each milestone ends 
 
 - [ ] Replace the Visual Studio `.gitignore` with a Python one (`.venv`, `__pycache__`, `.env`, `*.ogg`, …).
 - [ ] `pyproject.toml` (Python 3.12, aiogram 3.x, SQLAlchemy 2 async + asyncpg, Alembic, APScheduler 3.x, pydantic-settings, structlog); ruff + mypy + pytest.
-- [ ] `config.py`: `BOT_TOKEN` (new bot from BotFather — not the watering bot), `OWNER_USER_ID`, `DATABASE_URL`, provider keys.
-- [ ] Compose: `migrate` (one-shot Alembic) + `bot`, external network `pg-shared`, `mem_limit`, log rotation. Dev override with a local Postgres container.
-- [ ] One-time server setup: `pg-shared` network, watering `timescaledb` joined to it, `scripts/create_db.sql`, check memory headroom, close public 5432.
+- [ ] `config.py`: `RECOVERY_BOT_TOKEN` (new bot from BotFather — not the watering bot), `RECOVERY_OWNER_USER_ID`, `RECOVERY_DATABASE_URL`, provider keys.
+- [ ] Compose: `migrate` (one-shot Alembic) + `bot`, watering's network as external, `mem_limit`, log rotation. Local development uses a venv and a local Postgres (no Docker locally).
+- [ ] One-time server setup: `scripts/create_db.sql`, check memory headroom.
 - [ ] Structured logging with a **redaction filter** (never log message text / transcripts — spec §12.5); `/health`.
 - [ ] CI (GitHub Actions): ruff, mypy, pytest with a Postgres 16 service container.
 
@@ -289,7 +294,7 @@ Estimates assume one developer part-time (~10–15 h/week). Each milestone ends 
 
 ### Privacy & security (spec §12)
 - Owner-only gate on all update types; long polling (no inbound endpoint).
-- Separate DB and non-superuser role; recovery bot on `pg-shared` only; public 5432 closed (§1.1).
+- Separate DB and non-superuser role; `RECOVERY_`-prefixed config; webhook guard; watering's Postgres published on loopback only (§1.1).
 - Analytics tables reference the internal `user_id` UUID, not `telegram_id`.
 - Log redaction filter + a test asserting no message text appears in captured logs.
 - Daily retention job: purge `messages.text/transcript` past `purge_after_utc`; verify no audio files remain.
@@ -326,7 +331,7 @@ Microservices, energy-%, auto-diagnosis, recovery date prediction, ML prediction
 ## 7. First sprint backlog (≈ 2 weeks, = M0 + start of M1)
 
 1. Python `.gitignore`, `pyproject.toml`, Dockerfile, compose, CI.
-2. Server prep: `pg-shared` network, `create_db.sql`, close public 5432, check memory headroom.
+2. Server prep: `create_db.sql`, check memory headroom.
 3. Config, logging with redaction, `/health`, owner gate.
 4. SQLAlchemy models with the UTC/local time convention + initial Alembic migration.
 5. `/start` with timezone, check-in times, session day.

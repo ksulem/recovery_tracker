@@ -3,10 +3,11 @@
 -- Run as the superuser of that server (plantuser), passing the new role's password:
 --
 --   docker exec -i plant-monitor-timescaledb-1 \
---     psql -U plantuser -d plantmonitor -v ON_ERROR_STOP=1 \
+--     psql -U plantuser -d postgres -v ON_ERROR_STOP=1 \
 --          -v recovery_password="$RECOVERY_DB_PASSWORD" < scripts/create_db.sql
 --
--- Safe to inspect before running; it does not touch any plantmonitor table.
+-- It only creates a new role and a new database. Nothing that belongs to
+-- watering-system (the plantmonitor database, its roles, settings) is changed.
 
 CREATE ROLE recovery_app LOGIN PASSWORD :'recovery_password';
 
@@ -17,8 +18,8 @@ CREATE DATABASE recovery OWNER recovery_app TEMPLATE template0 ENCODING 'UTF8';
 REVOKE CONNECT ON DATABASE recovery FROM PUBLIC;
 GRANT CONNECT ON DATABASE recovery TO recovery_app;
 
--- Keep recovery_app out of the plant database. Every watering-system service
--- connects as plantuser (the owner/superuser), so this changes nothing for them.
-REVOKE CONNECT ON DATABASE plantmonitor FROM PUBLIC;
+-- Note: recovery_app can technically open a connection to plantmonitor (PUBLIC
+-- has CONNECT by default) but has no privileges on its tables. Tightening that
+-- would mean changing watering-system's database, which this project doesn't do.
 
 ALTER DATABASE recovery SET timezone TO 'UTC';
