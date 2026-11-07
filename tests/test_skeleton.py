@@ -1,8 +1,10 @@
+import asyncio
 import logging
 from typing import Any
 
 import pytest
 from aiogram import Dispatcher
+from aiogram.types import User as TgUser
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -10,7 +12,8 @@ from recovery.config import Settings
 from recovery.db.models import User
 from recovery.logging_setup import REDACTED, RedactingFilter, RedactingFormatter, scrub
 from recovery.main import ForeignWebhookError, ensure_polling_is_safe
-from tests.tg import STRANGER_ID, TgClient
+from recovery.telegram.middlewares import DbSessionMiddleware
+from tests.tg import OWNER_ID, STRANGER_ID, TgClient
 
 
 async def test_owner_gets_pong(make_client: Any) -> None:
@@ -29,6 +32,36 @@ async def test_stranger_gets_no_reply_and_nothing_is_stored(
     assert client.session.requests == []
     async with db() as s:
         assert await s.scalar(select(func.count()).select_from(User)) == 0
+
+
+async def test_overlapping_first_updates_create_one_user(
+    db: async_sessionmaker[AsyncSession],
+) -> None:
+    # Messages queued while the bot was down can be processed together. Update
+    # B looks up the user while update A has created it but not yet committed;
+    # before the fix B then failed on uq_users_telegram_id.
+    middleware = DbSessionMiddleware(db, "UTC")
+    data = {"event_from_user": TgUser(id=OWNER_ID, is_bot=False, first_name="Owner")}
+    a_inside, release_a = asyncio.Event(), asyncio.Event()
+
+    async def slow_handler(event: Any, d: dict[str, Any]) -> Any:
+        a_inside.set()
+        await release_a.wait()
+        return d["user"].id
+
+    async def quick_handler(event: Any, d: dict[str, Any]) -> Any:
+        return d["user"].id
+
+    a = asyncio.create_task(middleware(slow_handler, None, dict(data)))  # type: ignore[arg-type]
+    await a_inside.wait()
+    b = asyncio.create_task(middleware(quick_handler, None, dict(data)))  # type: ignore[arg-type]
+    await asyncio.sleep(0.3)  # B is now waiting on A's uncommitted row
+    release_a.set()
+    user_a, user_b = await asyncio.gather(a, b)
+
+    assert user_a == user_b
+    async with db() as s:
+        assert await s.scalar(select(func.count()).select_from(User)) == 1
 
 
 def _recovery_env(monkeypatch: pytest.MonkeyPatch) -> None:
