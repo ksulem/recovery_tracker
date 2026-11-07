@@ -31,6 +31,48 @@ reminder, and none after "Не сейчас" or during quiet hours. The session 
 arrives 3 hours before the session. If a message suggests immediate danger, the
 bot stops the normal flow and shows an emergency number.
 
+## What a check-in looks like
+
+Answers are buttons. Every question has **Пропустить** (skip) and **Закончить**
+(finish early), and each answer is saved immediately. If you come back to an
+unfinished check-in the same day, the bot offers **Продолжить / Начать заново /
+Не сейчас** (continue / start over / not now).
+
+**Morning** (`/morning`, about 30 seconds)
+
+| # | Question | Answer |
+|---|---|---|
+| 1 | Как ты сегодня после сна? *(How are you after sleep?)* | Хорошо · Средне · Плохо |
+| 2 | Насколько сейчас ощущается физическая энергия? *(Physical energy right now?)* | 0 … 10 |
+| 3 | Есть ли желание заняться чем-нибудь приятным? *(Do you feel like doing something pleasant?)* | Нет · Немного · Да |
+| 4 | Насколько тяжело представлять сегодняшний день? *(How hard does today look?)* | Не тяжело · Терпимо · Очень тяжело |
+| 5 | Ожидается сегодня что-то особенно энергозатратное? *(Anything especially draining today?)* | free text |
+
+**Evening** (`/evening`, under 2 minutes, plus an optional detailed block)
+
+| # | Question | Answer |
+|---|---|---|
+| 1 | Как ты сейчас по сравнению с утром? *(Compared to the morning?)* | Лучше · Так же · Хуже |
+| 2 | Что сегодня сильнее всего забирало силы? *(What drained you most?)* | several of: Работа, умственные задачи · Переживания, стресс · Общение · Физическая активность, быт · Необходимость принимать решения |
+| 3 | Что помогало восстановиться? *(What helped you recover?)* | several of: Побыть дома в одиночестве · Сон, отдых без обязательств · Сериалы, книги, игры · Хобби · Прогулка · Общение с близкими · Спокойные бытовые дела · Другое |
+| 4 | Остались ли силы на что-нибудь приятное? *(Any energy left for something pleasant?)* | Да, и получилось · Хотелось, но не было сил · Ничего не хотелось · Не знаю |
+| 5 | Хочешь отметить состояние подробнее? *(Add more detail? About a minute)* | Да · Нет |
+| ↳ | *If yes:* physical, emotional, social and cognitive resource, overall wellbeing *(each 0–10)*; interest in things *(0–5, from "ничего не хочется" to "хочется нового")*; signs of overload *(e.g. "Хочется, чтобы никто не трогал", "Раздражительность", "Приятное ощущается как нагрузка")* | |
+| 6 | Есть ли что-то важное, что стоит учесть завтра? *(Anything to keep in mind for tomorrow?)* | free text |
+
+**Right now** (`/now`: "Отметить состояние сейчас", for when you feel bad between check-ins)
+
+| # | Question | Answer |
+|---|---|---|
+| 1 | Как ты сейчас в целом? *(How are you overall?)* | 0 (очень плохо) … 10 (хорошо) |
+| 2 | Что сейчас происходит? *(What's going on?)* | several signs of overload, as above |
+| 3 | Если хочется — опиши словами, что происходит. *(Describe it in words, if you like)* | free text |
+
+The questions are plain data in
+[`src/recovery/conversation/flows.py`](src/recovery/conversation/flows.py), and
+their wording is in [`src/recovery/texts/ru.py`](src/recovery/texts/ru.py).
+Changing a question or adding an option needs no change to the logic.
+
 ## Run your own
 
 ### What you need
