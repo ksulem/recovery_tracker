@@ -1,24 +1,34 @@
 import logging
+from typing import Any
 
 import pytest
+from aiogram import Dispatcher
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from recovery.bot_factory import build_dispatcher
 from recovery.config import Settings
+from recovery.db.models import User
 from recovery.logging_setup import REDACTED, RedactingFilter, RedactingFormatter, scrub
 from recovery.main import ForeignWebhookError, ensure_polling_is_safe
-from tests.tg import OWNER_ID, STRANGER_ID, TgClient
+from tests.tg import STRANGER_ID, TgClient
 
 
-async def test_owner_gets_pong() -> None:
-    client = TgClient(build_dispatcher(owner_id=OWNER_ID))
+async def test_owner_gets_pong(make_client: Any) -> None:
+    client = make_client()
     await client.send("/ping")
     assert client.last_text() == "pong"
 
 
-async def test_stranger_gets_no_reply() -> None:
-    client = TgClient(build_dispatcher(owner_id=OWNER_ID), user_id=STRANGER_ID)
+async def test_stranger_gets_no_reply_and_nothing_is_stored(
+    make_client: Any, db: async_sessionmaker[AsyncSession]
+) -> None:
+    client = make_client(user_id=STRANGER_ID)
+    await client.send("/start")
     await client.send("/ping")
+    await client.click("st:morning:go")
     assert client.session.requests == []
+    async with db() as s:
+        assert await s.scalar(select(func.count()).select_from(User)) == 0
 
 
 def _recovery_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -50,7 +60,7 @@ def test_settings_ignore_watering_system_variables(monkeypatch: pytest.MonkeyPat
 
 
 async def test_refuses_to_start_on_a_token_with_a_webhook() -> None:
-    client = TgClient(build_dispatcher(owner_id=OWNER_ID))
+    client = TgClient(Dispatcher())
     client.session.webhook_url = "https://wateringkl.org/webhook"
     with pytest.raises(ForeignWebhookError):
         await ensure_polling_is_safe(client.bot)
@@ -59,7 +69,7 @@ async def test_refuses_to_start_on_a_token_with_a_webhook() -> None:
 
 
 async def test_starts_on_a_token_without_a_webhook() -> None:
-    client = TgClient(build_dispatcher(owner_id=OWNER_ID))
+    client = TgClient(Dispatcher())
     await ensure_polling_is_safe(client.bot)
 
 

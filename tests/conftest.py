@@ -68,3 +68,17 @@ async def db(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     async with engine.begin() as conn:
         await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
     return make_session_factory(engine)
+
+
+@pytest.fixture
+def make_client(db: async_sessionmaker[AsyncSession]):  # type: ignore[no-untyped-def]
+    """Build a TgClient on a fresh dispatcher (same DB) — calling it twice
+    simulates a bot restart."""
+    from recovery.bot_factory import build_dispatcher
+    from tests.tg import OWNER_ID, TgClient
+
+    def _make(user_id: int = OWNER_ID, **kwargs):  # type: ignore[no-untyped-def]
+        dp = build_dispatcher(owner_id=OWNER_ID, session_factory=db, **kwargs)
+        return TgClient(dp, user_id=user_id)
+
+    return _make
