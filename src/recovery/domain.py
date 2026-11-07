@@ -135,6 +135,8 @@ class PromptStatus(StrEnum):
     SENDING = "sending"
     SENT = "sent"
     FAILED = "failed"
+    SKIPPED = "skipped"  # not needed: e.g. the check-in was already started by hand
+    CANCELLED = "cancelled"  # the owner tapped "Не сейчас" — no reminder after that
 
 
 class DiscussionStatus(StrEnum):

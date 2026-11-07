@@ -12,12 +12,14 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from recovery.bot_factory import build_dispatcher
 from recovery.config import get_settings
 from recovery.db.engine import make_engine, make_session_factory, wait_for_db
 from recovery.health import start_health_server
 from recovery.logging_setup import setup_logging
+from recovery.scheduler.service import CheckinScheduler
 
 logger = logging.getLogger("recovery")
 
@@ -67,17 +69,29 @@ async def run() -> None:
         settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    session_factory = make_session_factory(engine)
+    scheduler = CheckinScheduler(
+        AsyncIOScheduler(timezone="UTC"),
+        bot,
+        session_factory,
+        reminder_delay_minutes=settings.reminder_delay_minutes,
+        catchup_window_minutes=settings.catchup_window_minutes,
+    )
     dp = build_dispatcher(
         owner_id=settings.owner_user_id,
-        session_factory=make_session_factory(engine),
+        session_factory=session_factory,
         default_timezone=settings.default_timezone,
+        settings_changed=scheduler.reschedule,
     )
     try:
         await ensure_polling_is_safe(bot)
         await bot.set_my_commands(BOT_COMMANDS)
+        await scheduler.start()
         logger.info("starting polling")
         await dp.start_polling(bot)
     finally:
+        if scheduler.scheduler.running:
+            scheduler.scheduler.shutdown(wait=False)
         await bot.session.close()
         await health.cleanup()
         await engine.dispose()

@@ -23,6 +23,7 @@ from recovery.conversation.engine import CheckinEngine, InvalidAnswer, flow_for,
 from recovery.conversation.flows import FLOWS, Kind, Question
 from recovery.db.models import Checkin, User
 from recovery.domain import CheckinStatus, CheckinType
+from recovery.scheduler.prompts import cancel_reminder
 from recovery.telegram.callbacks import AnswerCb, StartCb, short_id
 from recovery.telegram.keyboards import offer_keyboard, question_keyboard, resume_keyboard
 from recovery.texts import ru
@@ -140,6 +141,7 @@ async def on_start_button(
     kind = CheckinType(callback_data.kind)
     engine = CheckinEngine(session, user)
     if callback_data.op == "later":
+        await cancel_reminder(session, user, kind)  # "not now" means no reminder later
         await bot.send_message(user.telegram_id, ru.NOT_NOW)
         return
     if callback_data.op in ("resume", "restart") and kind != CheckinType.AD_HOC:
