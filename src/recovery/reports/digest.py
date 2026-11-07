@@ -13,6 +13,7 @@ from datetime import date, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from recovery.battery import in_reserve
 from recovery.clock import local_today
 from recovery.db.models import (
     Checkin,
@@ -178,12 +179,21 @@ def _scores_line(c: Checkin) -> str | None:
     return " · ".join(parts) if parts else None
 
 
+def _charge(c: Checkin) -> str:
+    text = f"{c.battery_pct}%"
+    if in_reserve(c.battery_pct, c.battery_reserve_pct):
+        text += f" ({ru.BATTERY_IN_RESERVE_MARK})"
+    return text
+
+
 def _checkin_lines(c: Checkin, day: Day) -> list[str]:
     lines: list[str] = []
     if c.checkin_type == CheckinType.MORNING:
         head = []
         if c.sleep_quality:
             head.append(f"после сна: {ru.SLEEP_LABELS.get(c.sleep_quality, '?').lower()}")
+        if c.battery_pct is not None:
+            head.append(f"заряд: {_charge(c)}")
         if c.physical_score is not None:
             head.append(f"физическая энергия: {c.physical_score}/10")
         if c.pleasant_desire:
@@ -199,6 +209,8 @@ def _checkin_lines(c: Checkin, day: Day) -> list[str]:
             lines.append(
                 f"По сравнению с утром: {ru.COMPARISON_LABELS[c.comparison_to_morning].lower()}"
             )
+        if c.battery_pct is not None:
+            lines.append(f"Заряд: {_charge(c)}")
         if c.checkin_type == CheckinType.AD_HOC and c.overall_score is not None:
             lines.append(f"Общее состояние: {c.overall_score}/10")
         loads = day.loads.get(c.id, [])
@@ -256,6 +268,38 @@ def render_days(digest: Digest) -> str:
     return "\n\n".join(render_day(d) for d in digest.days)
 
 
+def reserve_count_line(digest: Digest) -> str | None:
+    """How many mornings were at or below the reserve — a count, never an average."""
+    mornings = [
+        c
+        for d in digest.days
+        for c in d.of_type(CheckinType.MORNING)
+        if c.battery_pct is not None and c.battery_reserve_pct is not None
+    ]
+    if not mornings:
+        return None
+    count = sum(1 for c in mornings if in_reserve(c.battery_pct, c.battery_reserve_pct))
+    return ru.BATTERY_RESERVE_COUNT.format(count=count, total=len(mornings))
+
+
+def battery_section(digest: Digest) -> str | None:
+    """The day's charges side by side, as recorded (the exercise, step 3)."""
+    names = {CheckinType.MORNING: "утро", CheckinType.EVENING: "вечер"}
+    rows = []
+    for day in digest.days:
+        marks = [
+            f"{names.get(CheckinType(c.checkin_type), f'в {c.local_ts:%H:%M}')} {_charge(c)}"
+            for c in day.checkins
+            if c.battery_pct is not None
+        ]
+        if marks:
+            rows.append(f"- {fmt_date(day.date)}: " + " · ".join(marks))
+    if not rows:
+        return None
+    count = reserve_count_line(digest)
+    return "\n\n".join([ru.BATTERY_SECTION_TITLE, "\n".join(rows), *([count] if count else [])])
+
+
 def coverage_line(digest: Digest) -> str:
     return (
         f"Записи есть за {digest.days_with_records} из {digest.total_days} дн. "
@@ -270,11 +314,14 @@ async def week_markdown(session: AsyncSession, user: User) -> tuple[str, str]:
     end = local_today(user.timezone)
     start = end - timedelta(days=6)
     digest = await collect(session, user, start, end)
+    battery = battery_section(digest)
     text = "\n\n".join(
         [
             f"# Неделя: {fmt_period(start, end)}",
             coverage_line(digest),
             "_Только записанные факты, без выводов. Ресурсы показаны по отдельности._",
+            *([battery] if battery else []),
+            "## По дням",
             render_days(digest),
         ]
     )
@@ -339,6 +386,9 @@ async def session_brief(session: AsyncSession, user: User) -> SessionBrief:
         parts.append("_пунктов нет_")
     if note:
         parts += ["## С прошлой сессии", f"«{note}»"]
+    battery = battery_section(digest)
+    if battery:
+        parts.append(battery)
     parts += ["## По дням", render_days(digest)]
     return SessionBrief(
         start=start,

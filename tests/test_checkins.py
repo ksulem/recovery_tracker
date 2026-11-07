@@ -32,6 +32,7 @@ async def test_morning_checkin_saves_every_answer(make_client: Any, db: Factory)
     assert client.last_text() == ru.Q_SLEEP
 
     await client.click_button("Хорошо")
+    await client.click_button("40%")
     await client.click_button("6")
     await client.click_button("Немного")
     await client.click_button("Терпимо")
@@ -42,6 +43,7 @@ async def test_morning_checkin_saves_every_answer(make_client: Any, db: Factory)
     [c] = await _checkins(db)
     assert c.status == CheckinStatus.COMPLETED
     assert c.completed_at_utc is not None
+    assert c.battery_pct == 40
     assert (c.sleep_quality, c.physical_score, c.pleasant_desire, c.day_outlook) == (
         "good",
         6,
@@ -57,7 +59,7 @@ async def test_morning_checkin_saves_every_answer(make_client: Any, db: Factory)
 async def test_skipping_everything_leaves_nulls_not_zeros(make_client: Any, db: Factory) -> None:
     client = make_client()
     await client.send("/morning")
-    for _ in range(5):
+    for _ in range(6):
         await client.click_button(ru.BTN_SKIP)
     assert client.last_text() == ru.OUTRO_MORNING
 
@@ -66,6 +68,7 @@ async def test_skipping_everything_leaves_nulls_not_zeros(make_client: Any, db: 
     assert c.sleep_quality is None and c.physical_score is None and c.day_outlook is None
     assert c.question_status == {
         "sleep": "skipped",
+        "battery": "skipped",
         "phys": "skipped",
         "desire": "skipped",
         "outlook": "skipped",
@@ -91,6 +94,7 @@ async def test_evening_short_path_with_multi_select(make_client: Any, db: Factor
     client = make_client()
     await client.send("/evening")
     await client.click_button("Хуже")
+    await client.click_button("30%")
     await client.click_button("Работа")
     await client.click_button("Общение")
     await client.click_button("Работа")  # untoggle
@@ -120,6 +124,7 @@ async def test_evening_detail_block(make_client: Any, db: Factory) -> None:
     client = make_client()
     await client.send("/evening")
     await client.click_button(ru.BTN_SKIP)  # cmp
+    await client.click_button(ru.BTN_SKIP)  # battery
     await client.click_button(ru.BTN_DONE)  # drains: nothing selected
     await client.click_button(ru.BTN_SKIP)  # helped
     await client.click_button(ru.BTN_SKIP)  # energy
@@ -159,11 +164,11 @@ async def test_check_in_survives_a_restart(make_client: Any, db: Factory) -> Non
     # New dispatcher, new storage instance: only Postgres carries the state.
     after = make_client()
     after.session.requests = list(before.session.requests)
-    await after.click_button("3")  # the button sent before the restart still works
-    assert after.last_text() == ru.Q_PLEASANT_DESIRE
+    await after.click_button("30%")  # the button sent before the restart still works
+    assert after.last_text() == ru.Q_PHYSICAL_NOW
 
     [c] = await _checkins(db)
-    assert (c.sleep_quality, c.physical_score) == ("poor", 3)
+    assert (c.sleep_quality, c.battery_pct) == ("poor", 30)
     assert c.status == CheckinStatus.IN_PROGRESS
 
 
@@ -174,7 +179,7 @@ async def test_resume_and_restart(make_client: Any, db: Factory) -> None:
     await client.send("/morning")
     assert client.last_text() == ru.RESUME_PROMPT.format(name="утренний")
     await client.click_button(ru.BTN_CONTINUE)
-    assert client.last_text().startswith(ru.Q_PHYSICAL_NOW)  # picks up where it stopped
+    assert client.last_text() == ru.Q_BATTERY_MORNING  # picks up where it stopped
 
     await client.send("/morning")
     await client.click_button(ru.BTN_RESTART)
@@ -220,13 +225,14 @@ async def test_ad_hoc_checkins_are_unlimited(make_client: Any, db: Factory) -> N
     client = make_client()
     for _ in range(2):
         await client.send("/now")
+        await client.click_button("20%")
         await client.click_button("2")
         await client.click_button("Хочется, чтобы никто не трогал")
         await client.click_button(ru.BTN_DONE)
         await client.click_button(ru.BTN_SKIP)
         assert client.last_text() == ru.OUTRO_AD_HOC
     rows = await _checkins(db, CheckinType.AD_HOC)
-    assert [r.overall_score for r in rows] == [2, 2]
+    assert [(r.battery_pct, r.overall_score) for r in rows] == [(20, 2), (20, 2)]
     assert await _count(db, CheckinSymptom) == 2
 
 

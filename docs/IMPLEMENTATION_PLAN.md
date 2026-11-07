@@ -343,3 +343,30 @@ Microservices, energy-%, auto-diagnosis, recovery date prediction, ML prediction
 8. Free text + `/discuss` capture + safety keyword handler.
 9. Cron scheduler with startup catch-up.
 10. `/week` and `/session` (v0) Markdown export; deploy to the VM and smoke-test.
+
+---
+
+## Addendum: the battery exercise (suggested by the psychologist)
+
+Picture a phone-like battery; set part of the charge aside as a reserve in a
+favourite colour; notice what drains and what recharges it; on a low morning,
+plan the day around the charge you have, without self-blame.
+
+**How it fits the spec's guardrails.** The spec rules out the *bot* computing a
+pseudo-precise "energy %" or a cost per activity (§3.2, §6.4, §14). Here the
+percentage is the owner's own estimate, like a 0–10 scale in a different unit,
+and the bot never derives one. It is asked *alongside* the four separate
+resources, not instead of them (§6.3: no single averaged score).
+
+**Implementation (branch `feature/battery`).**
+- `users.battery_enabled`, `battery_reserve_pct`, `battery_color`;
+  `checkins.battery_pct` (0–100, steps of 10) and a `battery_reserve_pct`
+  snapshot taken at answer time. A later change of the reserve doesn't rewrite
+  history (same idea as `tz_name`). Migration `0003`.
+- A `PERCENT` question in the morning, evening and `/now` flows. It's skipped
+  entirely when the feature is off.
+- The answer is rendered as a bar in the chosen colour with the reserve marked.
+  At or below the reserve, one gentle note is shown (exercise step 4).
+- `/week` and the session brief get a "Батарейка" section: each day's charges
+  side by side, and a count of mornings at or below the reserve. Counts only,
+  no averages.

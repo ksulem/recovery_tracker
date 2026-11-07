@@ -8,10 +8,12 @@
 """
 
 import uuid
+from collections.abc import Collection
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from recovery import battery
 from recovery.clock import local_today, utcnow
 from recovery.conversation.flows import FLOWS, Flow, Kind, Question, Target
 from recovery.db.models import Checkin, CheckinSymptom, LoadEvent, RecoveryEvent, User
@@ -31,7 +33,13 @@ def flow_for(checkin: Checkin) -> Flow:
     return FLOWS[checkin.checkin_type]
 
 
-def next_question(checkin: Checkin) -> Question | None:
+def disabled_features(user: User) -> frozenset[str]:
+    return frozenset() if user.battery_enabled else frozenset({battery.FEATURE})
+
+
+def next_question(
+    checkin: Checkin, skip_features: Collection[str] = frozenset()
+) -> Question | None:
     status = checkin.question_status
     flow = flow_for(checkin)
     open_blocks = {
@@ -39,6 +47,8 @@ def next_question(checkin: Checkin) -> Question | None:
     }
     for question in flow.questions:
         if question.id in status:
+            continue
+        if question.feature and question.feature in skip_features:
             continue
         if question.block and question.block not in open_blocks:
             # The gate comes before its block in the flow, so by now it was
@@ -59,6 +69,9 @@ def _validate(question: Question, value: str | list[str]) -> str | list[str]:
     if question.kind in (Kind.SCALE_10, Kind.SCALE_5):
         high = 10 if question.kind == Kind.SCALE_10 else 5
         if not value.isdigit() or not 0 <= int(value) <= high:
+            raise InvalidAnswer(question.id)
+    elif question.kind == Kind.PERCENT:
+        if not value.isdigit() or not 0 <= int(value) <= 100 or int(value) % 10:
             raise InvalidAnswer(question.id)
     elif question.kind in (Kind.CHOICE, Kind.GATE):
         if value not in allowed:
@@ -126,12 +139,14 @@ class CheckinEngine:
                 self._mark(checkin, question, ANSWERED)
         else:
             assert isinstance(value, str) and question.column
-            stored: str | int = (
-                int(value) if question.kind in (Kind.SCALE_10, Kind.SCALE_5) else value
-            )
+            numeric = question.kind in (Kind.SCALE_10, Kind.SCALE_5, Kind.PERCENT)
+            stored: str | int = int(value) if numeric else value
             if question.kind == Kind.TEXT:
                 stored = self._append(getattr(checkin, question.column), value.strip())
             setattr(checkin, question.column, stored)
+            if question.kind == Kind.PERCENT:
+                # Snapshot: a later change of the reserve doesn't rewrite history.
+                checkin.battery_reserve_pct = self.user.battery_reserve_pct
             self._mark(checkin, question, ANSWERED)
         await self.session.flush()
 

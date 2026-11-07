@@ -9,6 +9,7 @@ evening check-in keeps the default path short).
 from dataclasses import dataclass
 from enum import StrEnum
 
+from recovery import battery
 from recovery.domain import CheckinType
 from recovery.texts import ru
 
@@ -16,6 +17,7 @@ from recovery.texts import ru
 class Kind(StrEnum):
     SCALE_10 = "scale10"
     SCALE_5 = "scale5"
+    PERCENT = "percent"  # 0–100 in steps of 10 (the battery charge)
     CHOICE = "choice"
     MULTI = "multi"
     TEXT = "text"
@@ -47,6 +49,7 @@ class Question:
     options: tuple[Option, ...] = ()
     block: str | None = None  # asked only if the gate for this block said yes
     opens: str | None = None  # for GATE questions
+    feature: str | None = None  # asked only if this optional feature is enabled
 
     def option_label(self, value: str) -> str:
         for option in self.options:
@@ -70,6 +73,10 @@ def _options(labels: dict[str, str]) -> tuple[Option, ...]:
     return tuple(Option(value, label) for value, label in labels.items())
 
 
+def _battery(text: str) -> Question:
+    return Question("battery", text, Kind.PERCENT, column="battery_pct", feature=battery.FEATURE)
+
+
 def _scale(qid: str, text: str, column: str, block: str | None = None) -> Question:
     return Question(qid, text, Kind.SCALE_10, column=column, block=block)
 
@@ -89,6 +96,7 @@ MORNING = Flow(
             column="sleep_quality",
             options=_options(ru.SLEEP_LABELS),
         ),
+        _battery(ru.Q_BATTERY_MORNING),
         _scale("phys", ru.Q_PHYSICAL_NOW, "physical_score"),
         Question(
             "desire",
@@ -120,6 +128,7 @@ EVENING = Flow(
             column="comparison_to_morning",
             options=_options(ru.COMPARISON_LABELS),
         ),
+        _battery(ru.Q_BATTERY_NOW),
         Question(
             "drain",
             ru.Q_DRAINS,
@@ -172,6 +181,7 @@ AD_HOC = Flow(
     intro=ru.INTRO_AD_HOC,
     outro=ru.OUTRO_AD_HOC,
     questions=(
+        _battery(ru.Q_BATTERY_NOW),
         _scale("all", ru.Q_OVERALL_NOW, "overall_score"),
         Question(
             "signs",
