@@ -94,7 +94,7 @@ def test_settings_ignore_watering_system_variables(monkeypatch: pytest.MonkeyPat
 
 async def test_refuses_to_start_on_a_token_with_a_webhook() -> None:
     client = TgClient(Dispatcher())
-    client.session.webhook_url = "https://wateringkl.org/webhook"
+    client.session.webhook_url = "https://example.org/webhook"
     with pytest.raises(ForeignWebhookError):
         await ensure_polling_is_safe(client.bot)
     sent = [type(r).__name__ for r in client.session.requests]
