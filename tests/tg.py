@@ -23,6 +23,7 @@ from aiogram.types import (
     Message,
     Update,
     User,
+    WebhookInfo,
 )
 
 OWNER_ID = 1001
@@ -34,12 +35,17 @@ class FakeSession(BaseSession):
         super().__init__()
         self.requests: list[TelegramMethod[Any]] = []
         self._ids = itertools.count(10_000)
+        self.webhook_url = ""
 
     async def make_request(
         self, bot: Bot, method: TelegramMethod[TelegramType], timeout: int | None = None
     ) -> TelegramType:
         self.requests.append(method)
         returning = method.__returning__
+        if returning is WebhookInfo:
+            return WebhookInfo(  # type: ignore[return-value]
+                url=self.webhook_url, has_custom_certificate=False, pending_update_count=0
+            )
         if returning is User:
             return User(id=42, is_bot=True, first_name="Bot", username="test_bot")  # type: ignore[return-value]
         if returning in (Message, Message | bool):

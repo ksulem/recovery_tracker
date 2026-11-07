@@ -21,6 +21,27 @@ from recovery.logging_setup import setup_logging
 logger = logging.getLogger("recovery")
 
 
+class ForeignWebhookError(RuntimeError):
+    pass
+
+
+async def ensure_polling_is_safe(bot: Bot) -> None:
+    """Refuse to start if this token has a webhook configured.
+
+    This bot never sets a webhook, so one being present means the token
+    belongs to another bot — most likely the watering bot, which runs on a
+    webhook on the same VM. Deleting it (what polling would require) would
+    silently break that bot, so we stop instead.
+    """
+    info = await bot.get_webhook_info()
+    if info.url:
+        raise ForeignWebhookError(
+            "RECOVERY_BOT_TOKEN has a webhook configured, so it is probably another "
+            "bot's token (e.g. the watering bot). Refusing to start; the webhook was "
+            "left untouched. Use the token of the recovery bot from @BotFather."
+        )
+
+
 async def run() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
@@ -39,8 +60,8 @@ async def run() -> None:
     )
     dp = build_dispatcher(owner_id=settings.owner_user_id)
     try:
+        await ensure_polling_is_safe(bot)
         logger.info("starting polling")
-        await bot.delete_webhook(drop_pending_updates=False)
         await dp.start_polling(bot)
     finally:
         await bot.session.close()

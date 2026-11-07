@@ -5,6 +5,7 @@ import pytest
 from recovery.bot_factory import build_dispatcher
 from recovery.config import Settings
 from recovery.logging_setup import REDACTED, RedactingFilter, RedactingFormatter, scrub
+from recovery.main import ForeignWebhookError, ensure_polling_is_safe
 from tests.tg import OWNER_ID, STRANGER_ID, TgClient
 
 
@@ -20,13 +21,46 @@ async def test_stranger_gets_no_reply() -> None:
     assert client.session.requests == []
 
 
+def _recovery_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RECOVERY_BOT_TOKEN", "1:recovery")
+    monkeypatch.setenv("RECOVERY_OWNER_USER_ID", "1")
+    monkeypatch.setenv("RECOVERY_DATABASE_URL", "postgresql+asyncpg://u:p@h/recovery")
+
+
 def test_settings_reject_unknown_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BOT_TOKEN", "1:x")
-    monkeypatch.setenv("OWNER_USER_ID", "1")
-    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@h/db")
-    monkeypatch.setenv("DEFAULT_TIMEZONE", "Europe/Tbilisi")  # real name is Asia/Tbilisi
+    _recovery_env(monkeypatch)
+    monkeypatch.setenv("RECOVERY_DEFAULT_TIMEZONE", "Europe/Tbilisi")  # real name: Asia/Tbilisi
     with pytest.raises(ValueError, match="unknown timezone"):
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_ignore_watering_system_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The watering-system stack on the same VM uses unprefixed names.
+    monkeypatch.setenv("BOT_TOKEN", "9:watering")
+    monkeypatch.setenv("OWNER_USER_ID", "999")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://plantuser:x@timescaledb/plantmonitor")
+    with pytest.raises(ValueError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+    _recovery_env(monkeypatch)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.bot_token.get_secret_value() == "1:recovery"
+    assert settings.owner_user_id == 1
+    assert "plantmonitor" not in settings.database_url.get_secret_value()
+
+
+async def test_refuses_to_start_on_a_token_with_a_webhook() -> None:
+    client = TgClient(build_dispatcher(owner_id=OWNER_ID))
+    client.session.webhook_url = "https://wateringkl.org/webhook"
+    with pytest.raises(ForeignWebhookError):
+        await ensure_polling_is_safe(client.bot)
+    sent = [type(r).__name__ for r in client.session.requests]
+    assert sent == ["GetWebhookInfo"]  # never DeleteWebhook
+
+
+async def test_starts_on_a_token_without_a_webhook() -> None:
+    client = TgClient(build_dispatcher(owner_id=OWNER_ID))
+    await ensure_polling_is_safe(client.bot)
 
 
 @pytest.mark.parametrize(

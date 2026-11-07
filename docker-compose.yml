@@ -1,6 +1,11 @@
-# Runs on the watering-system VM. Postgres is NOT defined here: the bot uses the
-# watering-system "timescaledb" container (separate database "recovery"),
-# reached over the external Docker network "pg-shared". See README → Deployment.
+# Runs on the VM shared with watering-system, as a fully separate Compose
+# project. Nothing here changes watering-system: Postgres is NOT defined here —
+# the bot uses watering's existing Postgres container (separate database
+# "recovery", separate role) by joining that project's existing Docker network
+# as an external network. See README → Deployment.
+#
+# All variables are RECOVERY_-prefixed: compose lets exported shell variables
+# override .env, and watering-system uses the unprefixed names.
 name: recovery
 
 x-logging: &default-logging
@@ -9,7 +14,7 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
-x-db-url: &db-url postgresql+asyncpg://recovery_app:${RECOVERY_DB_PASSWORD:?RECOVERY_DB_PASSWORD is required}@timescaledb:5432/recovery
+x-db-url: &db-url postgresql+asyncpg://recovery_app:${RECOVERY_DB_PASSWORD:?RECOVERY_DB_PASSWORD is required}@${RECOVERY_PG_HOST:-timescaledb}:5432/recovery
 
 services:
   migrate:
@@ -17,19 +22,19 @@ services:
     command: ["alembic", "upgrade", "head"]
     logging: *default-logging
     environment:
-      DATABASE_URL: *db-url
-    networks: [pg-shared]
+      RECOVERY_DATABASE_URL: *db-url
+    networks: [pg]
     restart: "no"
 
   bot:
     build: .
     logging: *default-logging
     environment:
-      BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN is required}
-      OWNER_USER_ID: ${OWNER_USER_ID:?OWNER_USER_ID is required}
-      DATABASE_URL: *db-url
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-UTC}
+      RECOVERY_BOT_TOKEN: ${RECOVERY_BOT_TOKEN:?RECOVERY_BOT_TOKEN is required}
+      RECOVERY_OWNER_USER_ID: ${RECOVERY_OWNER_USER_ID:?RECOVERY_OWNER_USER_ID is required}
+      RECOVERY_DATABASE_URL: *db-url
+      RECOVERY_LOG_LEVEL: ${RECOVERY_LOG_LEVEL:-INFO}
+      RECOVERY_DEFAULT_TIMEZONE: ${RECOVERY_DEFAULT_TIMEZONE:-UTC}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -39,13 +44,13 @@ services:
       timeout: 5s
       retries: 3
     # Hard cap on a 1 GB VM shared with the watering stack: if this bot leaks,
-    # it gets OOM-killed and restarted instead of pushing Postgres into swap.
+    # it gets OOM-killed and restarted instead of starving the other services.
     mem_limit: 160m
     restart: unless-stopped
-    # Only pg-shared: the bot can reach Postgres and nothing else of the
-    # watering stack (no MQTT broker, no API). No ports are published.
-    networks: [pg-shared]
+    # No ports are published; the bot only makes outbound connections.
+    networks: [pg]
 
 networks:
-  pg-shared:
+  pg:
     external: true
+    name: ${RECOVERY_PG_NETWORK:-plant-monitor_default}

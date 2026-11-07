@@ -1,4 +1,11 @@
-"""Application settings, read from environment variables (and .env for local runs)."""
+"""Application settings, read from environment variables (and .env for local runs).
+
+Every variable is prefixed with ``RECOVERY_`` (e.g. ``RECOVERY_BOT_TOKEN``).
+The VM is shared with watering-system, whose variables are named
+``BOT_TOKEN``, ``OWNER_USER_ID``, ``DATABASE_URL``… — and docker compose lets
+exported shell variables override a project's .env. The prefix makes it
+impossible to pick up the watering bot's token or database by accident.
+"""
 
 from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -6,9 +13,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+ENV_PREFIX = "RECOVERY_"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix=ENV_PREFIX, env_file=".env", extra="ignore")
 
     bot_token: SecretStr
     owner_user_id: int

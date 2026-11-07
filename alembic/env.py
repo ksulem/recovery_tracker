@@ -13,9 +13,9 @@ target_metadata = Base.metadata
 
 
 def _url() -> str:
-    url = config.attributes.get("database_url") or os.environ.get("DATABASE_URL")
+    url = config.attributes.get("database_url") or os.environ.get("RECOVERY_DATABASE_URL")
     if not url:
-        raise RuntimeError("DATABASE_URL is not set")
+        raise RuntimeError("RECOVERY_DATABASE_URL is not set")
     return str(url)
 
 

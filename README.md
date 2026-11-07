@@ -39,8 +39,8 @@ database; tests that need it are skipped when it isn't set:
 TEST_DATABASE_URL=postgresql+asyncpg://postgres@127.0.0.1:5432/recovery_test .venv/bin/pytest -q
 ```
 
-To run the bot locally, copy `.env.example` to `.env`, set `BOT_TOKEN`,
-`OWNER_USER_ID` and `DATABASE_URL`, then:
+To run the bot locally, copy `.env.example` to `.env`, set `RECOVERY_BOT_TOKEN`,
+`RECOVERY_OWNER_USER_ID` and `RECOVERY_DATABASE_URL`, then:
 
 ```bash
 .venv/bin/alembic upgrade head
@@ -53,36 +53,39 @@ After changing dependencies in `pyproject.toml`, regenerate the lock file:
 uv pip compile pyproject.toml --python-version 3.12 -o requirements.lock
 ```
 
-## Deployment (watering-system VM)
+## Deployment (VM shared with watering-system)
 
-The bot runs as its own Compose project next to watering-system and uses that
-project's Postgres container with a separate database and role.
+The bot runs as its own Compose project (`recovery`) in its own directory, for
+example `/opt/recovery`, with its own `.env`. It reuses watering-system's
+Postgres container through a separate database and role. **Nothing that
+belongs to watering-system is changed:** not its compose file, `.env`,
+database, network or backup bucket.
 
-1. **Shared network** (once):
+Two safeguards keep the projects apart:
+
+- Every variable is prefixed with `RECOVERY_`. watering-system uses
+  `BOT_TOKEN`, `OWNER_USER_ID`, `DATABASE_URL`, and docker compose lets
+  exported shell variables override `.env`, so unprefixed names could pick up
+  the watering bot's values.
+- The bot refuses to start if its token has a webhook configured. That would
+  mean it's the watering bot's token, and polling with it would delete that
+  bot's webhook.
+
+1. **Find the watering network.** The bot joins it as an external network.
+   Joining doesn't modify it.
 
    ```bash
-   docker network create pg-shared
+   docker network ls | grep plant-monitor
    ```
 
-   In watering-system's `docker-compose.yml`, attach `timescaledb` to it:
-
-   ```yaml
-   services:
-     timescaledb:
-       networks: [default, pg-shared]
-   networks:
-     pg-shared:
-       external: true
-   ```
-
-   While you're there, remove the `5432:5432` port mapping. Neither project
-   needs it, and published Docker ports bypass the host firewall.
+   If the name isn't `plant-monitor_default`, set `RECOVERY_PG_NETWORK` in `.env`.
 
 2. **Database and role** (once). Generate a password, put it in `.env` as
-   `RECOVERY_DB_PASSWORD`, and run:
+   `RECOVERY_DB_PASSWORD`, and run the script below. It only creates the
+   `recovery_app` role and the `recovery` database:
 
    ```bash
-   docker exec -i plant-monitor-timescaledb-1 psql -U plantuser -d plantmonitor -v ON_ERROR_STOP=1 -v recovery_password="$RECOVERY_DB_PASSWORD" < scripts/create_db.sql
+   docker exec -i plant-monitor-timescaledb-1 psql -U plantuser -d postgres -v ON_ERROR_STOP=1 -v recovery_password="$RECOVERY_DB_PASSWORD" < scripts/create_db.sql
    ```
 
 3. **Memory check.** The VM has 1 GB. Look at real usage before adding the bot
@@ -98,6 +101,7 @@ project's Postgres container with a separate database and role.
    docker compose up -d --build
    ```
 
-5. **Backups:** `scripts/backup-recovery-db.sh` (age-encrypted, `recovery/`
-   prefix in the existing bucket). Usage and the restore steps are in the
-   script header.
+5. **Backups:** `scripts/backup-recovery-db.sh` keeps age-encrypted dumps in
+   `/var/backups/recovery`. It uploads off-site only to a bucket you set in
+   `BUCKET`, never watering's. Usage and the restore steps are in the script
+   header.
