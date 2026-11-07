@@ -39,7 +39,8 @@ One small Python process (aiogram 3) + the existing Postgres server. No microser
 recovery_tracker/
 ├── pyproject.toml              # deps; ruff, mypy, pytest config
 ├── Dockerfile
-├── docker-compose.yml          # bot + migrate, joins watering's network as external
+├── docker-compose.yml          # self-contained: own Postgres + migrate + bot
+├── docker-compose.shared.yml   # bot + migrate, joins watering's network as external
 ├── alembic/                    # migrations (own version table in the recovery DB)
 ├── scripts/
 │   ├── create_db.sql           # one-time: role + database on the shared server

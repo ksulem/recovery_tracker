@@ -1,0 +1,61 @@
+# Variant for a server that ALREADY runs Postgres in another Compose project
+# (the author's VM shared with watering-system). Most people want the default
+# docker-compose.yml instead, which brings its own Postgres.
+#
+# Select it with COMPOSE_FILE=docker-compose.shared.yml in .env. Postgres is
+# NOT defined here: the bot uses the other project's Postgres container
+# (separate database "recovery", separate role) by joining that project's
+# existing Docker network as an external network. Nothing of the other project
+# is changed. See docs/DEPLOY_SHARED_POSTGRES.md.
+#
+# All variables are RECOVERY_-prefixed: compose lets exported shell variables
+# override .env, and watering-system uses the unprefixed names.
+name: recovery
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-db-url: &db-url postgresql+asyncpg://recovery_app:${RECOVERY_DB_PASSWORD:?RECOVERY_DB_PASSWORD is required}@${RECOVERY_PG_HOST:-timescaledb}:5432/recovery
+
+services:
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    logging: *default-logging
+    environment:
+      RECOVERY_DATABASE_URL: *db-url
+    networks: [pg]
+    restart: "no"
+
+  bot:
+    build: .
+    logging: *default-logging
+    environment:
+      RECOVERY_BOT_TOKEN: ${RECOVERY_BOT_TOKEN:?RECOVERY_BOT_TOKEN is required}
+      RECOVERY_OWNER_USER_ID: ${RECOVERY_OWNER_USER_ID:?RECOVERY_OWNER_USER_ID is required}
+      RECOVERY_DATABASE_URL: *db-url
+      RECOVERY_LOG_LEVEL: ${RECOVERY_LOG_LEVEL:-INFO}
+      RECOVERY_DEFAULT_TIMEZONE: ${RECOVERY_DEFAULT_TIMEZONE:-UTC}
+      RECOVERY_EMERGENCY_NUMBER: ${RECOVERY_EMERGENCY_NUMBER:-112}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=3)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # Hard cap on a 1 GB VM shared with the watering stack: if this bot leaks,
+    # it gets OOM-killed and restarted instead of starving the other services.
+    mem_limit: 160m
+    restart: unless-stopped
+    # No ports are published; the bot only makes outbound connections.
+    networks: [pg]
+
+networks:
+  pg:
+    external: true
+    name: ${RECOVERY_PG_NETWORK:-plant-monitor_default}
