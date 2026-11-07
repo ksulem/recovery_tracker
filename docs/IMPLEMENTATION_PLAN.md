@@ -4,46 +4,54 @@ Source spec: `telegram_recovery_bot_spec.md` v0.1 (Telegram bot for load and rec
 This plan turns the spec into an ordered set of milestones with concrete tasks, data model, and acceptance criteria.
 
 > Product guardrails (from the spec) that every milestone must respect:
-> no single averaged score, no "energy %" , no date-based "ready to return", no diagnoses,
+> no single averaged score, no "energy %", no date-based "ready to return", no diagnoses,
 > no causal claims from one episode, skipping is always allowed and never treated as worsening.
 
 ---
 
-## 0. Decisions on the open questions (spec §16)
+## 0. Decisions (spec §16 open questions — confirmed)
 
-Defaults chosen so work can start; each is cheap to revisit.
-
-| # | Question | MVP decision | Why |
-|---|----------|--------------|-----|
-| 1 | Personal or multi-user? | **Multi-user schema, single-user deployment.** Access gated by `ALLOWED_TELEGRAM_IDS` allowlist. | Spec §12.1 forbids accepting data from strangers; `user_id` everywhere costs nothing and avoids a later migration. |
-| 2 | Hosting | **Small VPS + Docker Compose** (app + Postgres + Caddy for HTTPS). | Cheapest, full control over sensitive data; Azure/other containers stay possible since everything is containerised. |
-| 3 | LLM / STT provider | **Behind interfaces** (`LLMClient`, `SpeechToText`). Default LLM: Claude (structured output via tool use / JSON schema). Default STT: a Whisper-class API with good Russian. | Spec says choose by Russian quality, price, retention policy — interface lets us A/B on a golden set (M3). |
-| 4 | Store raw transcripts? | **Yes by default, user can switch off** (`store_transcripts` setting). Audio deleted right after successful transcription. | Transcripts are the audit trail for "bot must not invent data". |
-| 5 | Check-in times | Defaults `09:30` / `21:00` local, configurable in `/settings`. | |
-| 6 | "I feel bad now" mode | **Yes — `/sos`-style ad-hoc check-in** (`checkin_type = ad_hoc`), short 3-question flow. Separate from crisis safety handling. | Cheap, matches "state over schedule". |
-| 7 | Retention | Raw messages/transcripts: 180 days (configurable); structured check-ins/events: until user deletes. Audio: deleted immediately. | |
-| 8 | Export | **Markdown (M1) + CSV (M4)**; JSON full dump for `/export_all`. | |
+| # | Question | Decision |
+|---|----------|----------|
+| 1 | Personal or multi-user? | **Personal bot, one owner.** Access gated by `OWNER_USER_ID` (same pattern as watering-system's `OwnerOnlyMiddleware`). Tables still carry `user_id` (settings live in `users`), but no multi-tenant features. |
+| 2 | Hosting | **Same VM and Postgres server as watering-system** (Oracle Cloud `VM.Standard.E2.1.Micro`, `timescale/timescaledb:latest-pg16` container), **separate database `recovery` with its own role**. Details in §1.1. |
+| 3 | LLM / STT provider | Behind interfaces (`LLMClient`, `SpeechToText`). Default LLM: Claude (structured output). Default STT: a Whisper-class API with good Russian. Final choice by the golden eval set (M3). |
+| 4 | Audio / transcripts | Audio deleted right after successful transcription. Transcripts stored by default; `store_transcripts` setting can switch it off. |
+| 5 | Check-in times | Defaults `09:30` / `21:00` local, configurable in `/settings`. |
+| 6 | "I feel bad now" mode | Yes — ad-hoc check-in (`checkin_type = ad_hoc`), short 3-question flow. Separate from crisis handling. |
+| 7 | Retention | Raw messages/transcripts: 180 days (configurable); structured data: until deleted by the owner. |
+| 8 | Export | Markdown (M1), CSV (M4), full JSON dump (`/export_all`). |
+| 9 | **Psychologist session brief** (new) | Summary of the period **since the previous session**, for the weekly session with the psychologist, plus a way to mark things "to discuss" during the week. See §3.1. |
 
 ---
 
-## 1. Target architecture (modular monolith)
+## 1. Target architecture
 
-One Python process (FastAPI + aiogram) plus Postgres. No microservices, no Redis in MVP.
+One small Python process (aiogram 3) + the existing Postgres server. No microservices, no Redis.
+
+**Deviation from spec §8.1:** no FastAPI, no Caddy for the MVP.
+- The bot uses **long polling**, so it needs no inbound port, no nginx route and no certificate — and no changes to watering-system's nginx (which resolves `proxy_pass` hosts at startup, so a route to a stopped recovery container would stop nginx booting and take the watering bot down with it).
+- A tiny aiohttp `/health` endpoint (aiohttp ships with aiogram — same approach as watering-system's bot) covers the Docker healthcheck.
+- This also keeps memory low on a 1 GB VM that is already running eight services.
+- FastAPI/webhook can be added later (e.g. for a Mini App) as a `/recovery/webhook` location using a runtime `resolver` in nginx so the two projects stay independent.
 
 ```
 recovery_tracker/
-├── pyproject.toml              # uv/poetry; ruff, mypy, pytest config
+├── pyproject.toml              # deps; ruff, mypy, pytest config
 ├── Dockerfile
-├── docker-compose.yml          # app, postgres, caddy
-├── alembic/                    # migrations
+├── docker-compose.yml          # bot + migrate, joins external network pg-shared
+├── alembic/                    # migrations (own version table in the recovery DB)
+├── scripts/
+│   ├── create_db.sql           # one-time: role + database on the shared server
+│   └── backup-recovery-db.sh   # nightly encrypted dump (adapted from watering-system)
 ├── src/recovery/
-│   ├── main.py                 # FastAPI app factory, lifespan (bot, scheduler)
+│   ├── main.py                 # entrypoint: bot polling, scheduler, /health
 │   ├── config.py               # pydantic-settings (env vars, secrets)
-│   ├── db/                     # engine, session, SQLAlchemy models
+│   ├── db/                     # engine, session, SQLAlchemy models, time helpers
 │   ├── telegram/               # adapter: routers, keyboards, middlewares — NO business logic
-│   │   ├── routers/            # start, settings, checkin, free_text, voice, reports, privacy
+│   │   ├── routers/            # start, settings, checkin, free_text, voice, reports, session, privacy
 │   │   ├── keyboards.py
-│   │   └── middlewares.py      # allowlist, user loading, db session
+│   │   └── middlewares.py      # owner gate (outer middleware on ALL update types), db session
 │   ├── conversation/           # orchestrator: flow definitions, state machine, follow-up limits
 │   │   ├── flows/              # morning.py, evening.py, ad_hoc.py (declarative question lists)
 │   │   ├── engine.py
@@ -51,56 +59,115 @@ recovery_tracker/
 │   ├── ingestion/              # input normalizer, voice handler
 │   ├── llm/                    # client interface, prompts, pydantic schemas, validation
 │   ├── safety/                 # crisis detection + response
-│   ├── analytics/              # aggregates, rules, state modes, insights
-│   ├── reports/                # daily summary, weekly report, markdown/csv export, charts
-│   ├── scheduler/              # due-prompt tick job
-│   ├── privacy/                # export, delete, consent
+│   ├── analytics/              # SQL aggregates, rules, planning modes, insights
+│   ├── reports/                # daily summary, weekly report, session brief, md/csv/pdf export, charts
+│   ├── scheduler/              # cron jobs
+│   ├── privacy/                # export, delete, consent, retention purge
 │   └── texts/ru.py             # all user-facing strings in one place (tone review)
 └── tests/
 ```
 
-Key architectural choices:
+Key choices:
 
-- **Webhook in prod, long polling in dev.** FastAPI exposes `POST /telegram/webhook` validated with `X-Telegram-Bot-Api-Secret-Token`. A `BOT_MODE=polling|webhook` switch keeps local dev simple.
-- **Dialog state in Postgres**, not memory (custom aiogram `BaseStorage` on a `dialog_state` table). Satisfies "data is not lost on restart" and "check-in can be resumed".
-- **Every answer is persisted immediately** (partial check-in rows), not at the end of the flow. Abandoning a check-in loses nothing.
-- **Scheduler = one tick job** (APScheduler `IntervalTrigger`, every minute) that queries users whose local time passed `morning_time`/`evening_time` and who have no `scheduled_prompts` row for `(user, kind, local_date)`. Insert with a unique constraint → idempotent, survives restarts, no per-user job bookkeeping.
-- **Sync heavy work off the event loop**: STT and LLM calls are async HTTP; if latency hurts, add an in-process `asyncio` task queue first; ARQ/Redis only if really needed (spec §8).
-- **Texts isolated in `texts/ru.py`** so tone (spec §2.6) can be reviewed in one file.
+- **Dialog state in Postgres** (custom aiogram `BaseStorage` on a `dialog_state` table) and **every answer persisted immediately** (partial check-in rows). A restart or an abandoned check-in loses nothing; the check-in can be resumed.
+- **Owner gate as an outer middleware on `dp.update`**, so messages, button callbacks and voice are all covered — not only `dp.message`.
+- **Texts isolated in `texts/ru.py`** so tone (spec §2.6) can be reviewed in one place.
+- **Lean dependencies** for the 1 GB box: aggregates in SQL rather than pandas; matplotlib imported lazily only when a chart is rendered; PDF via `fpdf2` (pure Python, Cyrillic via a bundled DejaVu font) rather than WeasyPrint.
+
+### 1.1 Hosting on the watering-system server
+
+Facts from `ksulem/watering-system` (`dev` branch): Postgres runs as the `timescaledb` service (pg16, `max_connections=40`, `shared_buffers=128MB`), DB `plantmonitor`, superuser `plantuser`, compose project `plant-monitor`. The VM has 1 OCPU / 1 GB RAM.
+
+**Database and role** (`scripts/create_db.sql`, run once as `plantuser`):
+
+```sql
+CREATE ROLE recovery_app LOGIN PASSWORD :'recovery_password';
+CREATE DATABASE recovery OWNER recovery_app TEMPLATE template0 ENCODING 'UTF8';
+REVOKE CONNECT ON DATABASE recovery FROM PUBLIC;
+GRANT  CONNECT ON DATABASE recovery TO recovery_app;
+-- keep recovery_app out of the plant DB (all watering services use plantuser, so this changes nothing for them)
+REVOKE CONNECT ON DATABASE plantmonitor FROM PUBLIC;
+ALTER DATABASE recovery SET timezone TO 'UTC';
+```
+
+- `template0` keeps the new DB free of the `timescaledb` extension (not needed here).
+- `recovery_app` owns the DB and runs Alembic itself; it is not a superuser.
+
+**Networking:** create one external Docker network `pg-shared` (`docker network create pg-shared`). Watering's `timescaledb` service joins it (a two-line change in watering-system's compose: `networks: [default, pg-shared]`). The recovery bot joins **only** `pg-shared` — it reaches Postgres at `timescaledb:5432` and cannot see Mosquitto, the API or anything else of the plant stack. (Alternative without touching watering-system: join `plant-monitor_default` as an external network — simpler, but couples to that project's network lifecycle and exposes its other services.)
+
+**Resources:**
+- SQLAlchemy pool `pool_size=2, max_overflow=2` (server has 40 connections total).
+- `mem_limit: 160m` for the bot. Before deploying, check headroom with `docker stats` / `free -m` on the VM — existing limits already add up to more than 1 GB, so measure real usage. If there's no room, this is another reason for the planned move to the larger Ampere shape.
+- Reuse the log rotation anchor (`json-file`, 10 MB × 3).
+
+**Security notes for sensitive data on a shared server:**
+- watering-system's compose publishes `5432:5432` ("close externally after setup") and Docker-published ports bypass the host's iptables `INPUT` chain, so only the OCI security list protects it. Since health/emotional data will live there, remove that port mapping (the recovery bot doesn't need it — it uses the Docker network) or at least confirm 5432 is closed in the security list.
+- `plantuser` is a superuser and can read the recovery DB. Acceptable for a single-owner box; keep the watering `.env` as protected as the recovery one.
+- Upgrading/restarting watering's `timescaledb` container also restarts the recovery bot's database — the bot must survive DB reconnects (pool `pre_ping=True`, retries on startup).
+
+**Backups:** watering-system's `scripts/backup-db.sh` dumps only `plantmonitor` and has TimescaleDB-specific restore steps. Add `scripts/backup-recovery-db.sh` in this repo, adapted from it: `pg_dump -Fc -d recovery`, `pg_restore --list` integrity check, **encryption with `age` before upload** (this data is more sensitive than sensor readings), upload under a separate `recovery/` prefix in the Object Storage bucket with its own lifecycle rule, MD5 verification. Test a restore once.
+
+### 1.2 Scheduler — cron jobs, not a per-minute tick
+
+The first draft used a job running every minute that checked "is it time yet?". That design suits many users with different times (one job instead of thousands) and automatically catches up after downtime. **For one user it's unnecessary**, so the plan now uses exact cron jobs:
+
+- APScheduler `CronTrigger(hour, minute, timezone=user.tz)` for: morning check-in, evening check-in, weekly report, session brief draft, daily retention purge, next-morning effect fill. APScheduler handles DST.
+- Jobs are **rebuilt from the `users` table at startup and whenever `/settings` changes** — in-memory job store, nothing to keep in sync.
+- **Catch-up on startup:** if today's check-in time passed less than 2 h ago and it wasn't sent, send it now (`misfire_grace_time` covers short hiccups).
+- `scheduled_prompts` table (unique `(user_id, kind, local_date)`) remains as a guard against double sends and as data for "missed check-ins" in reports.
+- At most **one gentle reminder** per missed check-in; skipping a day is fine.
 
 ---
 
 ## 2. Data model
 
-Spec §9 tables plus a few additions needed for correctness. All timestamps `TIMESTAMPTZ` (UTC); plus a **`local_date DATE`** computed at write time from the user's timezone — every daily/weekly aggregate groups by it (avoids midnight/timezone bugs).
+### 2.1 Time convention (UTC + local)
 
-### 2.1 Spec tables (with adjustments)
+Every row that records *when* something happened stores both UTC and local time:
 
-| Table | Adjustments vs spec |
-|-------|---------------------|
-| `users` | + `quiet_hours_start/end`, `store_transcripts BOOL`, `llm_consent_at`, `stt_consent_at`, `locale`, `deleted_at`. `telegram_id` unique. |
-| `checkins` | + `local_date`, `status` (`in_progress/completed/abandoned`), `completed_at`, `day_outlook` (`easy/tolerable/very_hard/skipped`), `pleasant_energy` (evening Q4 enum), `expected_heavy_load TEXT`. All scores nullable; **skip = NULL**, never 0. |
-| `load_events` | + `local_date`, `source` (`button/llm/manual`), `confidence` (`low/medium/high`), `message_id` FK, `confirmed BOOL`. |
-| `recovery_events` | + `local_date`, `source`, `confidence`, `message_id`. `next_morning_effect` filled by the next morning check-in job, not by guess. |
-| `messages` | + `checkin_id`, `text` (for typed input), `transcript_status`, `purge_after`. `raw_file_reference` cleared after audio deletion. |
-| `insights` | as spec. |
+| Column | Type | Meaning |
+|--------|------|---------|
+| `<event>_at_utc` | `TIMESTAMPTZ` | The instant, in UTC. The DB and every app connection run with `timezone=UTC`, so values also *display* as UTC. Suffix `_utc` makes it explicit in queries. |
+| `tz_name` | `TEXT` | IANA timezone of the owner **at write time** (e.g. `Europe/Tbilisi`). |
+| `local_ts` | `TIMESTAMP` (no tz) | Wall-clock time in `tz_name` — for "time of day" analysis. |
+| `local_date` | `DATE` | Local calendar day — **all daily/weekly aggregates group by this**. |
 
-### 2.2 Additional tables
+- `local_ts` / `local_date` are derived from `*_at_utc` + `tz_name` — preferably as `STORED` generated columns (`created_at_utc AT TIME ZONE tz_name`), otherwise computed in the app and covered by a test.
+- Snapshotting `tz_name` means history stays correct after a timezone change (travel): old days aren't silently shifted.
+- Dates the owner talks about (e.g. a session date) are plain `DATE` in local terms.
+
+### 2.2 Tables
+
+Spec §9 tables, adjusted:
+
+| Table | Notes |
+|-------|-------|
+| `users` | `telegram_id` unique, `timezone`, `morning_time`, `evening_time`, `reminders_enabled`, `quiet_hours_start/end`, `store_transcripts`, `session_weekday`, `session_time`, `session_brief_lead_hours`, `created_at_utc`. |
+| `checkins` | time columns (§2.1), `checkin_type` (`morning/evening/ad_hoc`), `status` (`in_progress/completed/abandoned`), `completed_at_utc`, the five 0–10 scores, `interest_score` 0–5, `sleep_quality`, `comparison_to_morning`, `day_outlook`, `pleasant_energy`, `expected_heavy_load`, `notes`. All scores nullable — **skip = NULL, never 0**. |
+| `load_events` | time columns + `occurred_at_utc` (nullable, only if known) + `occurred_part_of_day` (`morning/afternoon/evening/night/unknown`), `category`, `description`, `intensity`, `duration_minutes`, `source` (`button/llm/manual`), `confidence`, `message_id`, `checkin_id`. |
+| `recovery_events` | time columns, `activity`, `enjoyment` 0–5, `immediate_effect`, `next_morning_effect` (filled from the next morning check-in, never guessed), `source`, `confidence`, `message_id`, `checkin_id`. |
+| `messages` | time columns, `telegram_message_id`, `input_type`, `text`, `transcript`, `transcript_status`, `raw_file_reference` (cleared after audio deletion), `checkin_id`, `purge_after_utc`. |
+| `insights` | as spec; `supporting_data JSONB` holds the IDs of the rows behind each observation. |
+
+Added tables:
 
 | Table | Purpose |
 |-------|---------|
-| `checkin_symptoms (checkin_id, symptom, source)` | Overload signs (spec §3.1) are multi-select; normalised for weekly counts. Symptom codes are a closed enum: `need_isolation, no_motivation, irritability, low_concentration, physical_fatigue, sleep_difficulty, emotional_instability, pleasant_feels_heavy, staring_blankly, other`. |
-| `dialog_state (user_id, state, data JSONB, updated_at)` | FSM storage. |
-| `scheduled_prompts (user_id, kind, local_date, sent_at, status)` | Idempotent scheduling; unique `(user_id, kind, local_date)`. |
-| `llm_runs (id, message_id, provider, model, prompt_version, latency_ms, valid BOOL, error, created_at)` | Observability and evals **without** storing raw text in logs. |
-| `consents (user_id, kind, granted_at, revoked_at)` | Spec §12.8–10. |
+| `checkin_symptoms (checkin_id, symptom, source)` | Overload signs (multi-select), closed set: `need_isolation, no_motivation, irritability, low_concentration, physical_fatigue, sleep_difficulty, emotional_instability, pleasant_feels_heavy, staring_blankly, other`. |
+| `dialog_state (user_id, state, data JSONB, updated_at_utc)` | FSM storage. |
+| `scheduled_prompts (user_id, kind, local_date, sent_at_utc, status)` | Double-send guard; missed check-ins for reports. |
+| `therapy_sessions (id, user_id, session_date, brief_period_start, brief_period_end, brief_sent_at_utc, post_session_note, created_at_utc)` | One row per psychologist session; the brief covers the period since the previous row. |
+| `discussion_items (id, user_id, text, message_id, created_at_utc, local_date, status, session_id)` | Things marked "обсудить на сессии"; `status` = `open/discussed/dropped`; open items carry over to the next brief. |
+| `llm_runs (id, message_id, provider, model, prompt_version, latency_ms, valid, error, created_at_utc)` | Observability and evals without raw text in logs. |
+| `consents (user_id, kind, granted_at_utc, revoked_at_utc)` | LLM / STT data sharing (spec §12.8–10). |
 
 Enum-like columns: `TEXT` + `CHECK` constraints (easier to evolve than PG enums with Alembic).
 
 ### 2.3 Analytical views (M4)
 
-- `v_daily_state` — one row per `(user_id, local_date)`: morning scores, evening scores, comparison_to_morning, symptom count, load counts by category × intensity, recovery activities.
-- `v_next_morning` — `v_daily_state` self-joined on `local_date + 1` to pair evening load with next-morning state (spec §4.4).
+- `v_daily_state` — one row per `local_date`: morning/evening scores per dimension, comparison_to_morning, symptom count, load counts by category × intensity, recovery activities, check-in coverage.
+- `v_next_morning` — `v_daily_state` joined to itself on `local_date + 1`: evening load vs next-morning state (spec §4.4).
+- Both export cleanly to CSV/Parquet for ad-hoc exploration in a notebook or PySpark.
 
 ---
 
@@ -108,114 +175,136 @@ Enum-like columns: `TEXT` + `CHECK` constraints (easier to evolve than PG enums 
 
 Estimates assume one developer part-time (~10–15 h/week). Each milestone ends with a usable bot.
 
-### M0 — Project skeleton (≈ 3–4 days)
+### M0 — Project skeleton & deployment path (≈ 3–4 days)
 
-- [ ] Replace the Visual Studio `.gitignore` with a Python one (`.venv`, `__pycache__`, `.env`, `*.ogg`, etc.).
-- [ ] `pyproject.toml` (Python 3.12, aiogram 3.x, FastAPI, SQLAlchemy 2 async + asyncpg, Alembic, APScheduler 3.x, pydantic-settings, structlog); ruff + mypy + pytest.
-- [ ] `config.py` with env vars: `BOT_TOKEN`, `WEBHOOK_SECRET`, `DATABASE_URL`, `ALLOWED_TELEGRAM_IDS`, `BOT_MODE`, provider keys.
-- [ ] Docker Compose: `app`, `postgres:16`, `caddy` (auto TLS). Dev override with polling and no Caddy.
-- [ ] Structured logging with a **redaction filter** (never log message text / transcripts — spec §12.5); `/healthz` endpoint.
-- [ ] CI (GitHub Actions): ruff, mypy, pytest with Postgres service container.
-- [ ] Create bot via BotFather; document setup in README.
+- [ ] Replace the Visual Studio `.gitignore` with a Python one (`.venv`, `__pycache__`, `.env`, `*.ogg`, …).
+- [ ] `pyproject.toml` (Python 3.12, aiogram 3.x, SQLAlchemy 2 async + asyncpg, Alembic, APScheduler 3.x, pydantic-settings, structlog); ruff + mypy + pytest.
+- [ ] `config.py`: `BOT_TOKEN` (new bot from BotFather — not the watering bot), `OWNER_USER_ID`, `DATABASE_URL`, provider keys.
+- [ ] Compose: `migrate` (one-shot Alembic) + `bot`, external network `pg-shared`, `mem_limit`, log rotation. Dev override with a local Postgres container.
+- [ ] One-time server setup: `pg-shared` network, watering `timescaledb` joined to it, `scripts/create_db.sql`, check memory headroom, close public 5432.
+- [ ] Structured logging with a **redaction filter** (never log message text / transcripts — spec §12.5); `/health`.
+- [ ] CI (GitHub Actions): ruff, mypy, pytest with a Postgres 16 service container.
 
-**Done when:** `docker compose up` starts the app, `/healthz` is green, bot answers `/ping` in polling mode, CI is green.
+**Done when:** on the VM the bot answers `/ping` from the owner only, ignores anyone else, and Alembic has created its tables in the `recovery` DB.
 
-### M1 — Basic bot: onboarding, check-ins, persistence (spec Stage 1 + §17) (≈ 2–3 weeks)
+### M1 — Check-ins, persistence, session capture (spec Stage 1 + §17) (≈ 2–3 weeks)
 
-1. **Models + first Alembic migration**: `users`, `checkins`, `checkin_symptoms`, `messages`, `dialog_state`, `scheduled_prompts`, `consents`.
-2. **Middlewares**: allowlist (silently ignore others), user loader, DB session per update.
-3. **`/start` onboarding** (≤ 1 minute): short explanation + disclaimer "не медицинский сервис", timezone selection (buttons for common zones + "send city/offset" fallback, validated via `zoneinfo`), morning/evening times, reminders on/off.
-4. **`/settings`**: change timezone, times, quiet hours, reminders, transcript storage.
-5. **Conversation engine**: flows declared as data (question id, type `scale_0_10 | scale_0_5 | choice | multi_choice | free_text`, options, optional flag). Engine handles:
-   - "Пропустить" button on every question, "Закончить" to end early;
-   - persisting each answer immediately;
-   - resume: if an `in_progress` check-in exists for today, offer "Продолжить / Начать заново / Не сейчас";
-   - one active flow at a time; free text during a flow is attached to the current check-in as `notes`.
-6. **Evening check-in on buttons first** (spec §17.5), then morning, then ad-hoc:
-   - *Morning* (§4.1): sleep (good/medium/poor/skip), physical 0–10, desire for something pleasant (no/a little/yes → mapped to `interest_score` coarse), day outlook, optional heavy-load expectation.
-   - *Evening* (§4.3): compared to morning, what drained most (multi-select load categories), what helped (multi-select recovery activities + free text), pleasant energy left, note for tomorrow; optional 5-dimension block (physical / emotional / social / cognitive / overall 0–10) and overload signs multi-select — offered as "подробнее" so the default path stays ≤ 2 min.
+1. **Models + first migration**: `users`, `checkins`, `checkin_symptoms`, `messages`, `dialog_state`, `scheduled_prompts`, `therapy_sessions`, `discussion_items`, `consents`.
+2. **`/start` onboarding** (≤ 1 minute): short explanation + "не медицинский сервис" disclaimer, timezone (buttons + city/offset fallback validated via `zoneinfo`), check-in times, psychologist session day/time (optional, can skip).
+3. **`/settings`**: timezone, times, quiet hours, reminders, transcript storage, session day/time.
+4. **Conversation engine**: flows declared as data (question id, type `scale_0_10 | scale_0_5 | choice | multi_choice | free_text`, options, optional flag). Handles:
+   - "Пропустить" on every question, "Закончить" to stop early;
+   - each answer saved immediately;
+   - resume: an `in_progress` check-in for today offers "Продолжить / Начать заново / Не сейчас";
+   - one active flow at a time; free text during a flow goes to the current check-in's `notes`.
+5. **Evening check-in on buttons first** (spec §17.5), then morning, then ad-hoc:
+   - *Morning* (§4.1): sleep (good/medium/poor/skip), physical 0–10, desire for something pleasant (no/a little/yes), how heavy the day looks, optional heavy-load expectation.
+   - *Evening* (§4.3): compared to morning, what drained most (multi-select load categories), what helped (multi-select recovery + free text), pleasant energy left, note for tomorrow; an optional "подробнее" block with the five dimensions 0–10 and overload signs — the default path stays ≤ 2 min.
    - *Ad-hoc / "мне сейчас плохо"*: overall state, overload signs, free text.
-7. **Free text outside flows** (§17.7): stored in `messages` and attached to today's ad-hoc record; acknowledged gently. (LLM extraction comes in M3.)
-8. **Scheduler tick job** with quiet hours, reminders toggle, and **at most one gentle reminder** per missed check-in (no nagging; missing data is fine).
-9. **Safety handler v1** (must ship with any free-text input): keyword/regex detector for imminent self-harm phrases in Russian → stop normal flow, send static crisis message (emergency number for the user's country + "обратись к близкому человеку"), log only the fact of the event. Text reviewed carefully; no diagnosis.
-10. **`/week` Markdown export** (§17.8): last 7 days as a Markdown file — per-day scores shown **separately per dimension**, sleep, loads, recovery, notes; explicit "нет записи" for missing days.
-11. **`/export_all` (JSON) and `/delete_me`** (with confirmation) — cheap now, mandatory per §12.7.
+6. **Free text outside flows**: saved to `messages`, attached to today's ad-hoc record, acknowledged gently. (LLM extraction in M3.)
+7. **"Обсудить на сессии"**: `/discuss <текст>` and a "📌 На сессию" button under acknowledgements and summaries → `discussion_items`. Starts collecting material from day one.
+8. **Scheduler** (§1.2): cron jobs, startup catch-up, one reminder max, quiet hours respected.
+9. **Safety handler v1** (ships with the first free-text input): keyword/regex detector for imminent-danger phrases in Russian → stop the normal flow, send a static message (local emergency number + "обратись к близкому человеку"), log only the fact of the event.
+10. **`/week` Markdown export** (§17.8): last 7 days, each dimension shown separately, sleep, loads, recovery, notes; "нет записи" for missing days.
+11. **Session brief v0** (`/session`): the same factual digest but for the period since the last session, plus the open "to discuss" items. Enriched in M4.
+12. **`/export_all` (JSON) and `/delete_me`** (with confirmation).
 
-**Done when:** a full week can be logged via buttons; restart mid-check-in loses nothing and offers resume; skipping any question never blocks; Markdown export reflects exactly the stored data; morning+evening take < 3 min combined in a timed manual run.
+**Done when:** a full week can be logged with buttons; a restart mid-check-in loses nothing and offers resume; skipping never blocks; `/week` and `/session` show exactly the stored data; morning + evening take < 3 min combined.
 
 ### M2 — Voice (spec Stage 2) (≈ 1 week)
 
-- [ ] `SpeechToText` interface + provider implementation (language `ru`), timeouts and one retry.
-- [ ] Voice handler: `file_id` → download via Bot API to a temp dir → transcribe → **delete audio immediately on success** (on failure: retry once, then delete and ask to resend or type).
-- [ ] Show transcript with buttons "Верно / Исправить / Отменить"; "Исправить" accepts typed correction. Only confirmed text continues down the pipeline.
-- [ ] Input normalizer: unify `text | voice | button` into one `NormalizedInput(user_id, text, input_type, message_id, received_at, checkin_id?)`.
-- [ ] Consent prompt on first voice message: what is sent to the STT provider and its retention terms (§12.8–10). No consent → voice not processed, user can type instead.
-- [ ] Voice answers allowed for free-text questions inside check-ins.
+- [ ] `SpeechToText` interface + provider (language `ru`), timeout, one retry.
+- [ ] Voice handler: `file_id` → download to a temp dir → transcribe → **delete audio immediately** (on failure: one retry, then delete and ask to resend or type).
+- [ ] Show the transcript with "Верно / Исправить / Отменить"; only confirmed text continues.
+- [ ] Input normalizer: `text | voice | button` → `NormalizedInput(user_id, text, input_type, message_id, received_at_utc, checkin_id?)`.
+- [ ] Consent on first voice message: what goes to the STT provider and its retention terms. No consent → voice not processed.
+- [ ] Voice works for free-text check-in questions and for `/discuss`.
 
-**Done when:** a voice note in Russian becomes a confirmed note attached to the right check-in; no audio files remain on disk after processing; logs contain no transcript text.
+**Done when:** a Russian voice note becomes a confirmed note on the right check-in; no audio files remain on disk; logs contain no transcript text.
 
 ### M3 — LLM extraction & follow-ups (spec Stage 3, §5, §10, §11) (≈ 2 weeks)
 
-1. **Pydantic schemas** mirroring §10: `LoadEventOut`, `RecoveryActivityOut`, `FollowUp`, `AnalysisResult` with closed enums for categories, intensities, symptoms, activities; `null` for unknown; `confidence` on every extracted item; plus `safety_concern: bool`.
-2. **Prompt** from §11, versioned (`prompt_version` stored in `llm_runs`). Context passed to the model is compact: current message, today's check-in answers so far, list of already-asked follow-ups today, user's recent baseline (e.g. 7-day medians per dimension) — not full history.
-3. **Validation layer**: parse → Pydantic validate → business rules (no invented durations: `duration_minutes` must be null unless a number/time phrase is present in the text; categories within enum; max 1 follow-up) → on failure retry once with the error, then fall back to "store raw text only".
-4. **Confirmation instead of silent writes**: show the extracted events as a short list with "Сохранить / Поправить / Не сохранять". Only confirmed items are written to `load_events` / `recovery_events` / `checkin_symptoms` with `source='llm'`. This enforces "no unconfirmed facts" (§8.2.6).
-5. **Follow-up policy** (orchestrator, not the LLM, has the final say): ask only if LLM says `needed` **and** limit not reached (≤ 2 per check-in, ≤ 1 per message) **and** not asked before today; always offer "не знаю / пропустить".
-6. **Safety**: LLM `safety_concern` flag combined with the M1 keyword detector (either triggers the crisis response).
-7. **Golden evaluation set**: 30–50 realistic Russian diary messages with expected structured output (written by hand from the spec's examples). `pytest -m eval` reports category precision/recall, invented-field rate (must be 0), follow-up rate. Used to choose provider/model and to gate prompt changes.
-8. **Data-sharing consent** for LLM (same mechanism as STT); without it, free text is stored but not analysed.
+1. **Pydantic schemas** mirroring §10 with closed enums, `null` for unknown, `confidence` per item, plus `safety_concern: bool`.
+2. **Versioned prompt** from §11 (`prompt_version` in `llm_runs`). Compact context: current message, today's answers so far, follow-ups already asked today, 7-day per-dimension medians — not the full history.
+3. **Validation layer**: parse → Pydantic → business rules (no `duration_minutes` unless the text contains a duration; categories in enum; ≤ 1 follow-up) → on failure retry once with the error, then fall back to storing raw text only.
+4. **Confirm before saving**: show extracted events as a short list "Сохранить / Поправить / Не сохранять"; only confirmed items go to `load_events` / `recovery_events` / `checkin_symptoms` with `source='llm'`.
+5. **Follow-up policy** decided by the orchestrator, not the LLM: ask only if the LLM says `needed`, the limit isn't reached (≤ 2 per check-in, ≤ 1 per message) and it wasn't asked today; always offer "не знаю / пропустить".
+6. **Safety**: LLM `safety_concern` OR the M1 keyword detector triggers the crisis response.
+7. **Golden eval set**: 30–50 realistic Russian diary messages with expected output. `pytest -m eval` reports category precision/recall, invented-field rate (must be 0), follow-up rate. Used to pick provider/model and to gate prompt changes.
+8. **Consent** for LLM processing; without it free text is stored but not analysed.
 
-**Done when:** the spec example ("три часа сложной работы, неприятный разговор…") yields work/high/180 min + social-or-emotional event + symptoms, with at most one follow-up; eval set passes thresholds; invalid LLM output never reaches the DB.
+**Done when:** the spec example ("три часа сложной работы, неприятный разговор…") yields work/high/180 min + a social/emotional event + symptoms with at most one follow-up; the eval set passes; invalid LLM output never reaches the DB.
 
-### M4 — Reports & analytics (spec Stage 4, §6, §7) (≈ 2 weeks)
+### M4 — Reports, analytics, psychologist brief (spec Stage 4, §6, §7) (≈ 2–3 weeks)
 
-1. **Analytical views** `v_daily_state`, `v_next_morning` (§2.3), loaded into pandas for report generation (data is tiny; no Spark needed — but the same views export cleanly to CSV/Parquet if you want to explore in a notebook/PySpark).
-2. **Daily evening summary** (§7): template-driven, LLM only rephrases a structured fact list (facts in → text out; the LLM may not add facts). Sent after evening check-in completion, skippable via settings.
-3. **Weekly report** (`/report`, plus optional Sunday-evening delivery):
-   - per-dimension dynamics (never averaged across dimensions), interest/hobby trend, sleep quality distribution;
-   - top load categories by count × intensity;
-   - recovery activities followed by "better" (immediate and next morning);
-   - next-morning worsening after high-load days;
-   - recurring early signs;
-   - **data limitations block**: number of days with records, missing check-ins, explicit "данных пока недостаточно" when below thresholds.
-4. **Charts**: matplotlib PNG small multiples — one line per dimension in separate panels, gaps for missing days (no interpolation).
-5. **Rules engine for planning modes** (§6.1) — *stable / limited resource / pronounced exhaustion*. Deterministic, explainable rules over the last 1–3 days combining self-ratings, symptoms and dynamics (e.g. "no desire + low concentration + pleasant feels heavy" → exhaustion). Output stored as an `insight` with the triggering record IDs in `supporting_data`. Shown as a planning hint ("стоит упростить день"), never as a diagnosis, never from a single number.
-6. **Early-signs nudge** (§6.2): ≥ N early signs within the last 2–3 days → one gentle suggestion to review what can be postponed, at most once per few days.
-7. **Pattern wording guardrails**: patterns require ≥ 3 supporting occurrences; confidence `low/medium/high` from counts; text templates use "возможно, связано" / "похоже на повторяющуюся закономерность" only.
-8. **CSV export** of daily state.
+1. **Views** `v_daily_state`, `v_next_morning` (§2.3).
+2. **Daily evening summary**: built from a structured fact list; the LLM may only rephrase, never add facts. Can be switched off.
+3. **Weekly report** (`/report`, optional Sunday-evening delivery): per-dimension dynamics (never averaged), interest trend, sleep, top load categories, recovery activities followed by "better", next-morning worsening after heavy days, recurring early signs, **data limitations** (days with records, missed check-ins, "данных пока недостаточно" below thresholds).
+4. **Charts**: matplotlib small multiples, one panel per dimension, gaps for missing days (no interpolation).
+5. **Planning-mode rules** (§6.1: stable / limited resource / pronounced exhaustion): deterministic rules over the last 1–3 days combining ratings, symptoms and dynamics; stored as `insights` with supporting row IDs; shown as a planning hint, never a diagnosis, never from one number.
+6. **Early-signs nudge** (§6.2): several early signs in 2–3 days → one gentle suggestion to review what can be postponed, at most once every few days.
+7. **Pattern guardrails**: ≥ 3 supporting occurrences, confidence from counts, wording only "возможно, связано" / "похоже на повторяющуюся закономерность".
+8. **Psychologist session brief v1** — see §3.1.
+9. **CSV export** of `v_daily_state`.
 
-**Done when:** weekly report numbers are reproducible from SQL against the raw tables (unit-tested on fixture data); with < 4 days of data the report says so instead of drawing conclusions.
+**Done when:** report numbers are reproducible from SQL on fixture data; with < 4 days of data reports say so instead of drawing conclusions; the session brief fits on 1–2 pages.
+
+### 3.1 Psychologist session brief (detail)
+
+**Goal:** arrive at each weekly session with a short, factual overview of the period instead of reconstructing the week from memory.
+
+**Period:** from the previous session (`therapy_sessions`) to now; 7 days for the first one. Not a fixed calendar week, so a moved session still covers the right days.
+
+**During the week:** `/discuss` and the "📌 На сессию" button collect `discussion_items` (text or voice). Open items carry over until marked discussed or dropped.
+
+**Delivery:** a draft arrives `session_brief_lead_hours` (default 3 h) before the session time, or on demand via `/session`. The owner can drop sections or items with buttons before generating the final version. Output: a Telegram message (readable on the phone) + PDF/Markdown file to show or forward. It is only ever sent to the owner's chat — the owner decides what to share.
+
+**Content (in this order):**
+1. Period and data coverage (days with records / total, missed check-ins).
+2. **What I want to discuss** — open `discussion_items`, including carried-over ones.
+3. State by dimension: per-dimension range and direction over the period + chart; no combined score.
+4. Interest/hobby trend and sleep.
+5. Main load sources (by category and intensity) and the hardest days, with the owner's own short notes for those days.
+6. What helped (recovery activities with immediate / next-morning effect counts).
+7. Early signs and planning-mode days (how many stable / limited / exhausted days).
+8. Possible patterns — only with ≥ 3 occurrences, with confidence and "это не причинная связь".
+9. Since the last session — the owner's post-session note, if any.
+
+**After the session:** an optional prompt "Что хочешь сохранить с сессии?" → `post_session_note`; mark items as discussed. The next brief shows that note in section 9.
+
+**Rules:** observational language, no diagnoses, every number traceable to rows; LLM only rephrases (template-only mode available without LLM consent).
 
 ### M5 — Personalisation (spec Stage 5) (later, ≈ 2–3 weeks, after ≥ 3–4 weeks of real use)
 
 - Personal baselines (rolling medians per dimension) and "notable change vs your usual level" triggers for follow-ups (§5).
-- Individual early-sign profile: symptoms that most often preceded "exhaustion" days.
-- Ranking of recovery activities by next-morning effect, with sample sizes shown.
-- Adaptive question frequency (shorten morning check-in on stable streaks).
-- Gradual-return assistant (§6.5): suggests increasing load in **one** direction at a time once recent days are stable and small activities didn't worsen the next morning — never date-based.
-- Two-week experiment mode (§7): guided phases with day counter, explicitly framed as observation, "no improvement is also a result".
+- Individual early-sign profile: symptoms that most often preceded exhausted days.
+- Recovery activities ranked by next-morning effect, with sample sizes.
+- Adaptive question frequency (shorter morning check-in on stable streaks).
+- Gradual-return assistant (§6.5): suggest increasing load in **one** direction at a time once recent days are stable and small activities didn't worsen the next morning — never date-based.
+- Two-week experiment mode (§7), framed as observation; "no improvement is also a result".
 
 ---
 
 ## 4. Cross-cutting work
 
 ### Privacy & security (spec §12)
-- Allowlist middleware; webhook secret token; HTTPS via Caddy; Postgres not exposed publicly; secrets only via env / Docker secrets.
-- Separate `telegram_id` from analytics: analytics tables reference internal `user_id` UUID only.
-- Log redaction filter + test that asserts no message text appears in captured logs.
-- Retention job (daily): purge `messages.text/transcript` past `purge_after`; verify no audio files remain.
-- `/privacy` command: what is stored, what goes to which provider, how to export/delete.
-- Nightly `pg_dump` backups, encrypted, with a tested restore.
+- Owner-only gate on all update types; long polling (no inbound endpoint).
+- Separate DB and non-superuser role; recovery bot on `pg-shared` only; public 5432 closed (§1.1).
+- Analytics tables reference the internal `user_id` UUID, not `telegram_id`.
+- Log redaction filter + a test asserting no message text appears in captured logs.
+- Daily retention job: purge `messages.text/transcript` past `purge_after_utc`; verify no audio files remain.
+- `/privacy`: what is stored, what goes to which provider, how to export/delete.
+- Encrypted nightly backups of the `recovery` DB with a tested restore (§1.1).
 
 ### Testing strategy
-- **Unit**: flow definitions, engine transitions (skip/resume/abandon), rules engine, report aggregations, validation layer.
-- **Integration**: real Postgres via testcontainers / CI service; aiogram updates fed through the dispatcher with a fake bot session; fake `LLMClient`/`SpeechToText`.
-- **Scheduler**: frozen time (`time-machine`) across timezones and DST changes; idempotency on double tick.
-- **LLM evals**: golden set (M3), run manually / nightly, not on every PR.
-- **Tone review**: checklist over `texts/ru.py` — no words about discipline/productivity/"должна", every question has a skip option.
+- **Unit**: flow definitions, engine (skip/resume/abandon), rules, report aggregations, brief period selection, validation layer, UTC → local conversion.
+- **Integration**: Postgres 16 (CI service container); aiogram updates through the dispatcher with a fake bot session; fake `LLMClient` / `SpeechToText`.
+- **Time**: frozen time (`time-machine`) across timezones, DST changes and a mid-week timezone change; scheduler catch-up after a simulated restart; no double sends.
+- **LLM evals**: golden set (M3), run manually/nightly, not on every PR.
+- **Tone review**: checklist over `texts/ru.py` — no discipline/productivity wording, every question skippable.
 
 ### Observability
-- structlog JSON logs (IDs only), Sentry for exceptions (with `before_send` scrubbing message bodies), `llm_runs` table for latency/validity stats.
+- structlog JSON logs (IDs only), Sentry or similar with `before_send` scrubbing message bodies, `llm_runs` for latency/validity.
 
 ---
 
@@ -225,24 +314,24 @@ Estimates assume one developer part-time (~10–15 h/week). Each milestone ends 
 |-----------|----------------------|
 | Daily survey ≤ 3 min | Short default paths, optional "подробнее" block (M1); timed manual test |
 | Voice diary | M2 |
-| No data loss on restart | Per-answer persistence + Postgres FSM + idempotent scheduler (M1) |
+| No data loss on restart | Per-answer persistence + Postgres FSM + startup catch-up (M1) |
 | Skips never block | Skip button on every question, engine tests (M1) |
-| Bot doesn't invent data | NULL-for-skip, LLM validation + user confirmation, invented-field eval = 0 (M3) |
+| Bot doesn't invent data | NULL-for-skip, LLM validation + confirmation, invented-field eval = 0 (M3) |
 | Weekly report reflects real records | SQL-reproducible aggregates + fixture tests (M4) |
-| No guilt / pressure | Max one reminder, tone checklist, no streaks/scores of "discipline" |
+| No guilt / pressure | One reminder max, tone checklist, no streaks or "discipline" scores |
 
-## 6. Explicitly out of scope for v1 (spec §14)
+## 6. Out of scope for v1 (spec §14)
 Microservices, energy-%, auto-diagnosis, recovery date prediction, ML prediction models, wearables, many notifications, auto-cancelling meetings.
 
 ## 7. First sprint backlog (≈ 2 weeks, = M0 + start of M1)
 
-1. Python `.gitignore`, `pyproject.toml`, Docker Compose, CI.
-2. Config, logging with redaction, `/healthz`.
-3. SQLAlchemy models + initial Alembic migration (`users`, `checkins`, `checkin_symptoms`, `messages`, `dialog_state`, `scheduled_prompts`).
-4. Allowlist + user middlewares.
-5. `/start` with timezone and check-in times.
+1. Python `.gitignore`, `pyproject.toml`, Dockerfile, compose, CI.
+2. Server prep: `pg-shared` network, `create_db.sql`, close public 5432, check memory headroom.
+3. Config, logging with redaction, `/health`, owner gate.
+4. SQLAlchemy models with the UTC/local time convention + initial Alembic migration.
+5. `/start` with timezone, check-in times, session day.
 6. Conversation engine with skip/finish/resume + Postgres FSM storage.
 7. Evening check-in on buttons, saved per answer.
-8. Free-text capture + safety keyword handler.
-9. `/week` Markdown export.
-10. Webhook mode behind Caddy on the VPS; smoke test end-to-end.
+8. Free text + `/discuss` capture + safety keyword handler.
+9. Cron scheduler with startup catch-up.
+10. `/week` and `/session` (v0) Markdown export; deploy to the VM and smoke-test.
