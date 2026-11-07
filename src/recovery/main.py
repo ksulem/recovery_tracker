@@ -97,7 +97,10 @@ async def run() -> None:
         await bot.set_my_commands(BOT_COMMANDS)
         await scheduler.start()
         logger.info("starting polling")
-        await dp.start_polling(bot)
+        # One owner, so concurrency buys nothing — and processing updates one
+        # at a time keeps them in order and rules out races between them
+        # (a burst queued while the bot was down, a double-tapped button).
+        await dp.start_polling(bot, handle_as_tasks=False)
     finally:
         if scheduler.scheduler.running:
             scheduler.scheduler.shutdown(wait=False)

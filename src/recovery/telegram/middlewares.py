@@ -8,6 +8,7 @@ from aiogram import BaseMiddleware
 from aiogram.enums import ChatType
 from aiogram.types import Chat, TelegramObject, User
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from recovery.db import models
@@ -56,15 +57,24 @@ class DbSessionMiddleware(BaseMiddleware):
     async def __call__(self, handler: Handler, event: TelegramObject, data: dict[str, Any]) -> Any:
         tg_user: User = data["event_from_user"]
         async with self.session_factory() as session:
-            user = await session.scalar(
-                select(models.User).where(models.User.telegram_id == tg_user.id)
-            )
-            if user is None:
-                user = models.User(telegram_id=tg_user.id, timezone=self.default_timezone)
-                session.add(user)
-                await session.flush()
             data["session"] = session
-            data["user"] = user
+            data["user"] = await self._get_or_create_user(session, tg_user.id)
             result = await handler(event, data)
             await session.commit()
             return result
+
+    async def _get_or_create_user(self, session: AsyncSession, telegram_id: int) -> models.User:
+        """Race-free: updates that arrive before the first one has committed
+        (e.g. messages queued while the bot was down) must not collide on
+        ``uq_users_telegram_id``. A concurrent insert waits for the other
+        transaction and then does nothing; the re-select sees its row."""
+        query = select(models.User).where(models.User.telegram_id == telegram_id)
+        user = await session.scalar(query)
+        if user is None:
+            await session.execute(
+                insert(models.User)
+                .values(telegram_id=telegram_id, timezone=self.default_timezone)
+                .on_conflict_do_nothing(index_elements=[models.User.telegram_id])
+            )
+            user = (await session.scalars(query)).one()
+        return user
