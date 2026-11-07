@@ -14,7 +14,7 @@ This plan turns the spec into an ordered set of milestones with concrete tasks, 
 | # | Question | Decision |
 |---|----------|----------|
 | 1 | Personal or multi-user? | **Personal bot, one owner.** Access gated by `OWNER_USER_ID` (same pattern as watering-system's `OwnerOnlyMiddleware`). Tables still carry `user_id` (settings live in `users`), but no multi-tenant features. |
-| 2 | Hosting | **Same VM and Postgres server as watering-system** (Oracle Cloud `VM.Standard.E2.1.Micro`, `timescale/timescaledb:latest-pg16` container), **separate database `recovery` with its own role**. Details in §1.1. |
+| 2 | Hosting | **Self-contained by default** (own Postgres 16 container, `docker-compose.yml`). Optionally **on a small VM next to another project's Postgres server**, in a **separate database `recovery` with its own role** (`docker-compose.shared.yml`). Details in §1.1. |
 | 3 | LLM / STT provider | Behind interfaces (`LLMClient`, `SpeechToText`). Default LLM: Claude (structured output). Default STT: a Whisper-class API with good Russian. Final choice by the golden eval set (M3). |
 | 4 | Audio / transcripts | Audio deleted right after successful transcription. Transcripts stored by default; `store_transcripts` setting can switch it off. |
 | 5 | Check-in times | Defaults `09:30` / `21:00` local, configurable in `/settings`. |
@@ -75,18 +75,20 @@ Key choices:
 - **Texts isolated in `texts/ru.py`** so tone (spec §2.6) can be reviewed in one place.
 - **Lean dependencies** for the 1 GB box: aggregates in SQL rather than pandas; matplotlib imported lazily only when a chart is rendered; PDF via `fpdf2` (pure Python, Cyrillic via a bundled DejaVu font) rather than WeasyPrint.
 
-### 1.1 Hosting on the watering-system server
+### 1.1 Hosting
 
-Facts from `ksulem/watering-system` (`dev` branch): Postgres runs as the `timescaledb` service (pg16, `max_connections=40`, `shared_buffers=128MB`), DB `plantmonitor`, superuser `plantuser`, compose project `plant-monitor`. The VM has 1 OCPU / 1 GB RAM.
+**Default: self-contained.** `docker-compose.yml` runs Postgres 16, a one-shot `migrate` service and the bot in one Compose project. Postgres is reachable only on the project's own Docker network, and no ports are published.
 
-**Rule: recovery-tracker doesn't change anything that belongs to watering-system** — not its compose file, `.env`, database, network or backup bucket. The one agreed exception is the security fix below, made in the watering-system repo itself.
+**Option: next to an existing Postgres server** (`docker-compose.shared.yml`, steps in `docs/DEPLOY_SHARED_POSTGRES.md`). This is for a small VM (e.g. 1 GB RAM) that already runs Postgres for another project, such as the author's watering-system, where a second Postgres container would cost too much memory.
+
+**Rule: recovery-tracker doesn't change anything that belongs to the other project** — not its compose file, `.env`, database, network or backup bucket.
 
 **Isolation on a shared VM:**
 - Own Compose project (`name: recovery`), own directory and `.env` on the VM.
-- All variables are `RECOVERY_`-prefixed. watering-system uses `BOT_TOKEN` / `OWNER_USER_ID` / `DATABASE_URL`, and docker compose lets exported shell variables override `.env`, so unprefixed names could silently pick up the watering bot's values.
-- The bot refuses to start if its token has a webhook configured. That would mean it's the watering bot's token, and polling would require deleting that webhook.
+- All variables are `RECOVERY_`-prefixed. Other projects commonly use `BOT_TOKEN` / `OWNER_USER_ID` / `DATABASE_URL`, and docker compose lets exported shell variables override `.env`, so unprefixed names could silently pick up another bot's values.
+- The bot refuses to start if its token has a webhook configured. That would mean it's another bot's token, and polling would require deleting that webhook.
 
-**Database and role** (`scripts/create_db.sql`, run once as `plantuser`). It only creates a role and a database:
+**Database and role** (`scripts/create_db.sql`, run once as the existing server's superuser). It only creates a role and a database:
 
 ```sql
 CREATE ROLE recovery_app LOGIN PASSWORD :'recovery_password';
@@ -96,22 +98,22 @@ GRANT  CONNECT ON DATABASE recovery TO recovery_app;
 ALTER DATABASE recovery SET timezone TO 'UTC';
 ```
 
-- `template0` keeps the new DB free of the `timescaledb` extension (not needed here).
-- `recovery_app` owns the DB and runs Alembic itself; it is not a superuser and has no privileges on `plantmonitor` tables.
+- `template0` keeps the new DB free of extensions installed into `template1` (e.g. TimescaleDB), which aren't needed here.
+- `recovery_app` owns the DB and runs Alembic itself; it is not a superuser and has no privileges on the other project's tables.
 
-**Networking:** the bot joins watering's existing network (`plant-monitor_default`, configurable via `RECOVERY_PG_NETWORK`) as an *external* network and reaches Postgres at `timescaledb:5432`. Joining a network doesn't modify it. No ports are published by the bot.
+**Networking:** the bot joins the other project's existing Docker network (`RECOVERY_PG_NETWORK`) as an *external* network and reaches Postgres by its service name (`RECOVERY_PG_HOST`). Joining a network doesn't modify it. No ports are published by the bot.
 
 **Resources:**
-- SQLAlchemy pool `pool_size=2, max_overflow=2` (server has 40 connections total).
-- `mem_limit: 160m` for the bot. Before deploying, check headroom with `docker stats` / `free -m` on the VM — existing limits already add up to more than 1 GB, so measure real usage.
+- SQLAlchemy pool `pool_size=2, max_overflow=2`: at most 4 connections, so check the shared server's `max_connections`.
+- `mem_limit: 160m` for the bot. Before deploying, check headroom with `docker stats` / `free -m` on the VM, and measure real usage rather than adding up the configured limits.
 - Own log rotation (`json-file`, 10 MB × 3).
 
 **Security notes for sensitive data on a shared server:**
-- watering-system published `5432:5432` on all interfaces, and Docker-published ports bypass the host's iptables `INPUT` chain. **Fixed in watering-system** (`fix/db-port-loopback-only`, merged to its `dev`): now `127.0.0.1:5432:5432`. No watering service used the host port, and psql or an SSH tunnel on the VM still work.
-- `plantuser` is a superuser and can read the recovery DB. Acceptable for a single-owner box.
-- Restarting watering's `timescaledb` container also restarts the recovery database — the bot survives reconnects (pool `pre_ping=True`, waits for the DB on startup).
+- Make sure the shared Postgres isn't published on public interfaces: Docker-published ports bypass the host's iptables `INPUT` chain. Publish it on `127.0.0.1` only, or not at all, and keep the cloud firewall closed for it.
+- The other project's superuser can read the recovery DB. Acceptable for a single-owner box.
+- Restarting the shared Postgres container also restarts the recovery database — the bot survives reconnects (pool `pre_ping=True`, waits for the DB on startup).
 
-**Backups:** `scripts/backup-recovery-db.sh`, adapted from watering's script: `pg_dump -Fc -d recovery` as `recovery_app`, `pg_restore --list` integrity check, **`age` encryption** (this data is more sensitive than sensor readings), encrypted copies kept in `/var/backups/recovery`. Off-site upload only to a bucket set in `BUCKET` — not watering's bucket. Test a restore once.
+**Backups:** `scripts/backup-recovery-db.sh`: `pg_dump -Fc -d recovery` as `recovery_app`, `pg_restore --list` integrity check, **`age` encryption** (this data is sensitive), encrypted copies kept locally (`LOCAL_DIR`). Off-site upload only to a bucket of your own set in `BUCKET`. Test a restore once.
 
 ### 1.2 Scheduler — cron jobs, not a per-minute tick
 
@@ -295,7 +297,7 @@ Estimates assume one developer part-time (~10–15 h/week). Each milestone ends 
 
 ### Privacy & security (spec §12)
 - Owner-only gate on all update types; long polling (no inbound endpoint).
-- Separate DB and non-superuser role; `RECOVERY_`-prefixed config; webhook guard; watering's Postgres published on loopback only (§1.1).
+- Separate DB and non-superuser role; `RECOVERY_`-prefixed config; webhook guard; Postgres never published on public interfaces (§1.1).
 - Analytics tables reference the internal `user_id` UUID, not `telegram_id`.
 - Log redaction filter + a test asserting no message text appears in captured logs.
 - Daily retention job: purge `messages.text/transcript` past `purge_after_utc`; verify no audio files remain.
