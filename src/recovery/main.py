@@ -11,14 +11,23 @@ import logging
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 
 from recovery.bot_factory import build_dispatcher
 from recovery.config import get_settings
-from recovery.db.engine import make_engine, wait_for_db
+from recovery.db.engine import make_engine, make_session_factory, wait_for_db
 from recovery.health import start_health_server
 from recovery.logging_setup import setup_logging
 
 logger = logging.getLogger("recovery")
+
+BOT_COMMANDS = [
+    BotCommand(command="morning", description="Утренний опрос"),
+    BotCommand(command="evening", description="Вечерний опрос"),
+    BotCommand(command="now", description="Отметить состояние сейчас"),
+    BotCommand(command="settings", description="Настройки"),
+    BotCommand(command="help", description="Подсказка"),
+]
 
 
 class ForeignWebhookError(RuntimeError):
@@ -58,9 +67,14 @@ async def run() -> None:
         settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    dp = build_dispatcher(owner_id=settings.owner_user_id)
+    dp = build_dispatcher(
+        owner_id=settings.owner_user_id,
+        session_factory=make_session_factory(engine),
+        default_timezone=settings.default_timezone,
+    )
     try:
         await ensure_polling_is_safe(bot)
+        await bot.set_my_commands(BOT_COMMANDS)
         logger.info("starting polling")
         await dp.start_polling(bot)
     finally:
