@@ -29,6 +29,9 @@ class Settings(BaseSettings):
 
     default_timezone: str = "UTC"
 
+    # Shown in the crisis message. 112 works across Europe, Georgia, Armenia, Russia.
+    emergency_number: str = "112"
+
     # Connection budget: the shared Postgres server allows 40 connections in total.
     db_pool_size: int = 2
     db_max_overflow: int = 2

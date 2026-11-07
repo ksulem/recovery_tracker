@@ -7,6 +7,26 @@ replace a doctor.
 
 Design and milestones: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
 
+## What it does (M1)
+
+| Command | |
+|---|---|
+| `/start` | Onboarding: timezone, check-in times, optional psychologist session day |
+| `/morning`, `/evening` | Short check-ins on buttons. Every question can be skipped, a check-in can be finished early or resumed |
+| `/now` | Note your state outside the schedule |
+| any text | Saved as a diary note, with a "📌 На сессию" button |
+| `/discuss` | Add an item to the list for the next session |
+| `/session` | Factual summary since the last session, plus a Markdown file |
+| `/week` | Last 7 days as a Markdown file |
+| `/settings` | Times, timezone, session, quiet hours, reminders |
+| `/privacy`, `/export_all`, `/delete_me` | What is stored; full JSON export; delete everything |
+
+Scheduled prompts arrive at your local times. You get at most one gentle
+reminder, and none after "Не сейчас". The session summary arrives 3 hours
+before the session. A message that suggests immediate danger stops the
+normal flow and shows an emergency number (`RECOVERY_EMERGENCY_NUMBER`,
+default 112).
+
 ## Stack
 
 Python 3.12 · aiogram 3 (long polling) · SQLAlchemy 2 async + asyncpg · Alembic ·

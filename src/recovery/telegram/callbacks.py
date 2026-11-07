@@ -31,3 +31,16 @@ def encode_time(hhmm: str) -> str:
 
 def short_id(checkin_id: object) -> str:
     return str(checkin_id).replace("-", "")[:8]
+
+
+class NoteCb(CallbackData, prefix="nt"):
+    op: str  # disc (add the saved note to the session list)
+    m: str  # message id, hex
+
+
+class SessionCb(CallbackData, prefix="ss"):
+    op: str  # held | close | all | keep | skipnote
+
+
+class DeleteCb(CallbackData, prefix="del"):
+    op: str  # yes | no
