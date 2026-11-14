@@ -14,7 +14,15 @@ from recovery.telegram.hooks import (
     noop_user_deleted,
 )
 from recovery.telegram.middlewares import DbSessionMiddleware, OwnerOnlyMiddleware
-from recovery.telegram.routers import checkin, common, notes, privacy, reports, setup
+from recovery.telegram.routers import (
+    checkin,
+    common,
+    notes,
+    privacy,
+    reports,
+    setup,
+    thoughts,
+)
 
 
 def build_dispatcher(
@@ -42,5 +50,6 @@ def build_dispatcher(
     dp.include_router(checkin.make_router())
     dp.include_router(reports.make_router())
     dp.include_router(privacy.make_router())
+    dp.include_router(thoughts.make_router())
     dp.include_router(notes.make_router())  # catch-all for free text: keep last
     return dp

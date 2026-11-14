@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from recovery import battery
-from recovery.domain import CheckinType
+from recovery.domain import CheckinType, FlowVariant
 from recovery.texts import ru
 
 
@@ -22,6 +22,8 @@ class Kind(StrEnum):
     MULTI = "multi"
     TEXT = "text"
     GATE = "gate"
+    PARK = "park"  # free text → parked thoughts, one per line
+    THOUGHT = "thought"  # what to do with the thought taken on today's walk
 
 
 class Target(StrEnum):
@@ -71,6 +73,23 @@ class Flow:
 
 def _options(labels: dict[str, str]) -> tuple[Option, ...]:
     return tuple(Option(value, label) for value, label in labels.items())
+
+
+WALK_FEATURE = "walk"
+
+THOUGHT_ACTIONS = (
+    Option("done", ru.BTN_THOUGHT_DONE),
+    Option("later", ru.BTN_THOUGHT_LATER),
+    Option("session", ru.BTN_THOUGHT_SESSION),
+    Option("drop", ru.BTN_THOUGHT_DROP),
+)
+
+# Closing of the day: the walk thought (only if one was taken today), then
+# "anything else to park until tomorrow?".
+WALK_THOUGHT = Question(
+    "walk", ru.Q_WALK_THOUGHT, Kind.THOUGHT, options=THOUGHT_ACTIONS, feature=WALK_FEATURE
+)
+PARK = Question("park", ru.Q_PARK, Kind.PARK)
 
 
 def _battery(text: str) -> Question:
@@ -173,6 +192,8 @@ EVENING = Flow(
             block="details",
         ),
         Question("tmrw", ru.Q_TOMORROW, Kind.TEXT, column="tomorrow_note"),
+        WALK_THOUGHT,
+        PARK,
     ),
 )
 
@@ -194,8 +215,25 @@ AD_HOC = Flow(
     ),
 )
 
+# Late-evening version: no day review, just the charge and what to park.
+EVENING_SHORT = Flow(
+    checkin_type=CheckinType.EVENING,
+    intro=ru.INTRO_EVENING_SHORT,
+    outro=ru.OUTRO_EVENING_SHORT,
+    questions=(_battery(ru.Q_BATTERY_NOW), PARK),
+)
+
 FLOWS: dict[str, Flow] = {
     CheckinType.MORNING: MORNING,
     CheckinType.EVENING: EVENING,
     CheckinType.AD_HOC: AD_HOC,
 }
+VARIANTS: dict[tuple[str, str], Flow] = {
+    (CheckinType.EVENING, FlowVariant.SHORT): EVENING_SHORT,
+}
+
+
+def get_flow(checkin_type: str, variant: str | None = None) -> Flow:
+    if variant is not None:
+        return VARIANTS[(checkin_type, variant)]
+    return FLOWS[checkin_type]

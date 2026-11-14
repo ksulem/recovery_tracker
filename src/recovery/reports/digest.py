@@ -9,10 +9,12 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from recovery import winddown
 from recovery.battery import in_reserve
 from recovery.clock import local_today
 from recovery.db.models import (
@@ -21,11 +23,18 @@ from recovery.db.models import (
     DiscussionItem,
     LoadEvent,
     Message,
+    ParkedThought,
     RecoveryEvent,
     TherapySession,
     User,
 )
-from recovery.domain import CheckinStatus, CheckinType, DiscussionStatus, InputType
+from recovery.domain import (
+    CheckinStatus,
+    CheckinType,
+    DiscussionStatus,
+    InputType,
+    ThoughtStatus,
+)
 from recovery.texts import ru
 
 MONTHS_GENITIVE = [
@@ -300,6 +309,71 @@ def battery_section(digest: Digest) -> str | None:
     return "\n\n".join([ru.BATTERY_SECTION_TITLE, "\n".join(rows), *([count] if count else [])])
 
 
+def day_review_line(digest: Digest) -> str | None:
+    """Evenings whose check-in was finished at least an hour before sleep —
+    the goal agreed with the psychologist. A count, not a score."""
+    evenings = [
+        c
+        for d in digest.days
+        for c in d.of_type(CheckinType.EVENING)
+        if c.bedtime is not None
+        and c.completed_at_utc is not None
+        and c.status == CheckinStatus.COMPLETED
+    ]
+    if not evenings:
+        return None
+    count = sum(
+        1
+        for c in evenings
+        if c.bedtime is not None
+        and c.completed_at_utc is not None
+        and winddown.on_time(c.completed_at_utc.astimezone(ZoneInfo(c.tz_name)).time(), c.bedtime)
+    )
+    return ru.DAY_REVIEW_ON_TIME.format(count=count, total=len(evenings))
+
+
+async def thoughts_line(session: AsyncSession, user: User, start: date, end: date) -> str | None:
+    rows = (
+        await session.scalars(select(ParkedThought).where(ParkedThought.user_id == user.id))
+    ).all()
+
+    def resolved_in_period(t: ParkedThought) -> bool:
+        if t.resolved_at_utc is None:
+            return False
+        day = t.resolved_at_utc.astimezone(ZoneInfo(t.tz_name)).date()
+        return start <= day <= end
+
+    parked = sum(1 for t in rows if start <= t.local_date <= end)
+    resolved = [t for t in rows if resolved_in_period(t)]
+    if not parked and not resolved:
+        return None
+
+    def count(status: ThoughtStatus) -> int:
+        return sum(1 for t in resolved if t.status == status)
+
+    return ru.THOUGHTS_SUMMARY.format(
+        parked=parked,
+        done=count(ThoughtStatus.DONE),
+        session=count(ThoughtStatus.TO_SESSION),
+        dropped=count(ThoughtStatus.DROPPED),
+        open=sum(1 for t in rows if t.status == ThoughtStatus.OPEN),
+    )
+
+
+async def wind_down_section(session: AsyncSession, user: User, digest: Digest) -> str | None:
+    lines = [
+        line
+        for line in (
+            day_review_line(digest),
+            await thoughts_line(session, user, digest.start, digest.end),
+        )
+        if line
+    ]
+    if not lines:
+        return None
+    return "\n\n".join([ru.WIND_DOWN_SECTION_TITLE, *lines])
+
+
 def coverage_line(digest: Digest) -> str:
     return (
         f"Записи есть за {digest.days_with_records} из {digest.total_days} дн. "
@@ -315,12 +389,14 @@ async def week_markdown(session: AsyncSession, user: User) -> tuple[str, str]:
     start = end - timedelta(days=6)
     digest = await collect(session, user, start, end)
     battery = battery_section(digest)
+    wind_down = await wind_down_section(session, user, digest)
     text = "\n\n".join(
         [
             f"# Неделя: {fmt_period(start, end)}",
             coverage_line(digest),
             "_Только записанные факты, без выводов. Ресурсы показаны по отдельности._",
             *([battery] if battery else []),
+            *([wind_down] if wind_down else []),
             "## По дням",
             render_days(digest),
         ]
@@ -389,6 +465,9 @@ async def session_brief(session: AsyncSession, user: User) -> SessionBrief:
     battery = battery_section(digest)
     if battery:
         parts.append(battery)
+    wind_down = await wind_down_section(session, user, digest)
+    if wind_down:
+        parts.append(wind_down)
     parts += ["## По дням", render_days(digest)]
     return SessionBrief(
         start=start,

@@ -19,17 +19,47 @@ Nothing is shared between copies, and the bot answers only its owner.
 | `/start` | Setup: timezone, check-in times, optional session day and time |
 | `/morning`, `/evening` | Short check-ins on buttons. Every question can be skipped; a check-in can be finished early or resumed later |
 | `/now` | Note how you feel right now, outside the schedule |
-| any text | Saved as a diary note, with a "📌 На сессию" button |
+| any text | Saved as a diary note, with "📌 На сессию" and "🅿️ На потом" buttons |
+| `/later` | Park a thought for later; without text, list parked thoughts and review them one at a time |
 | `/discuss` | Add an item to discuss at your next session |
 | `/session` | Factual summary since your last session, plus a Markdown file |
 | `/week` | The last 7 days as a Markdown file |
-| `/settings` | Times, timezone, session, quiet hours, reminders, the battery |
+| `/settings` | Times, timezone, session, quiet hours, reminders, the battery, bedtime, evening walk |
 | `/privacy`, `/export_all`, `/delete_me` | What is stored; full JSON export; delete everything |
 
 Check-in prompts arrive at your local times. You get at most one gentle
 reminder, and none after "Не сейчас" or during quiet hours. The session summary
 arrives 3 hours before the session. If a message suggests immediate danger, the
 bot stops the normal flow and shows an emergency number.
+
+### Evening wind-down and parked thoughts
+
+For when the day review drifts towards bedtime and thoughts keep going late
+into the night. The goal is to finish the review **at least an hour before
+sleep** and to write down whatever comes up, so it can wait until later.
+Late in the evening the bot deliberately stays quiet: one-line replies, no
+questions, no reminders.
+
+Set two things in `/settings`: **🌙 Время сна** (e.g. 23:00) and
+**🐕 Вечерняя прогулка** (e.g. 18:45). Both are optional; without them this
+behaviour is off.
+
+| When | What happens |
+|---|---|
+| Before the evening walk | Only if something is parked: "можно взять с собой одну мысль, а можно просто погулять". One thought, only if you ask for it, and nothing to decide during the walk. Never in the morning |
+| Evening check-in | Ends by closing the day: what to do with the walk thought (обдумано · пусть полежит · на сессию · неактуально), "что-то ещё отложить на завтра?", "День закрыт 🌙" |
+| From an hour before bedtime until morning | No reminders or offers. Any message is parked with a one-line reply. `/evening` offers a short version (battery + what to park); after midnight it only offers to park |
+
+- `/later` parks a thought (several, one per line). Without text it lists
+  parked thoughts and lets you review them one at a time.
+- If a thought is postponed a third time, the bot offers once to move it to the
+  list for your session. "Пусть полежит" is always a fine answer.
+- If the evening check-in is less than an hour before bedtime, `/settings`
+  offers to move it earlier. With a 23:00 bedtime it suggests 20:45, and the
+  evening reminder comes 45 minutes later, at 21:30.
+- `/week` and `/session` count how many evening check-ins finished an hour or
+  more before sleep, and how many thoughts were parked and dealt with. Counts
+  only: no streaks, no "success rate".
 
 ### The battery
 
@@ -81,6 +111,8 @@ unfinished check-in the same day, the bot offers **Продолжить / Нач
 | 6 | Хочешь отметить состояние подробнее? *(Add more detail? About a minute)* | Да · Нет |
 | ↳ | *If yes:* physical, emotional, social and cognitive resource, overall wellbeing *(each 0–10)*; interest in things *(0–5, from "ничего не хочется" to "хочется нового")*; signs of overload *(e.g. "Хочется, чтобы никто не трогал", "Раздражительность", "Приятное ощущается как нагрузка")* | |
 | 7 | Есть ли что-то важное, что стоит учесть завтра? *(Anything to keep in mind for tomorrow?)* | free text |
+| 8 | *Only if a thought was taken on the walk:* Мысль с прогулки — что с ней? *(The walk thought: what about it?)* | Обдумано · Пусть полежит · На сессию · Неактуально |
+| 9 | Что-то ещё крутится в голове? Можно отложить на завтра *(Anything else on your mind? Park it until tomorrow)* | free text, one thought per line · Ничего |
 
 **Right now** (`/now`: "Отметить состояние сейчас", for when you feel bad between check-ins)
 

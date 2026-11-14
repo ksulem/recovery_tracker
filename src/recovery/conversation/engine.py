@@ -13,10 +13,17 @@ from collections.abc import Collection
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from recovery import battery
+from recovery import battery, thoughts
 from recovery.clock import local_today, utcnow
-from recovery.conversation.flows import FLOWS, Flow, Kind, Question, Target
-from recovery.db.models import Checkin, CheckinSymptom, LoadEvent, RecoveryEvent, User
+from recovery.conversation.flows import WALK_FEATURE, Flow, Kind, Question, Target, get_flow
+from recovery.db.models import (
+    Checkin,
+    CheckinSymptom,
+    LoadEvent,
+    ParkedThought,
+    RecoveryEvent,
+    User,
+)
 from recovery.domain import CheckinStatus, CheckinType, Source
 
 ANSWERED = "answered"
@@ -30,11 +37,16 @@ class InvalidAnswer(ValueError):
 
 
 def flow_for(checkin: Checkin) -> Flow:
-    return FLOWS[checkin.checkin_type]
+    return get_flow(checkin.checkin_type, checkin.flow_variant)
 
 
 def disabled_features(user: User) -> frozenset[str]:
-    return frozenset() if user.battery_enabled else frozenset({battery.FEATURE})
+    disabled = set()
+    if not user.battery_enabled:
+        disabled.add(battery.FEATURE)
+    if user.walk_time is None:
+        disabled.add(WALK_FEATURE)
+    return frozenset(disabled)
 
 
 def next_question(
@@ -73,10 +85,10 @@ def _validate(question: Question, value: str | list[str]) -> str | list[str]:
     elif question.kind == Kind.PERCENT:
         if not value.isdigit() or not 0 <= int(value) <= 100 or int(value) % 10:
             raise InvalidAnswer(question.id)
-    elif question.kind in (Kind.CHOICE, Kind.GATE):
+    elif question.kind in (Kind.CHOICE, Kind.GATE, Kind.THOUGHT):
         if value not in allowed:
             raise InvalidAnswer(question.id)
-    elif question.kind == Kind.TEXT and not value.strip():
+    elif question.kind in (Kind.TEXT, Kind.PARK) and not thoughts.split(value):
         raise InvalidAnswer(question.id)
     return value
 
@@ -105,11 +117,14 @@ class CheckinEngine:
             )
         )
 
-    async def start(self, checkin_type: CheckinType) -> Checkin:
+    async def start(self, checkin_type: CheckinType, variant: str | None = None) -> Checkin:
         checkin = Checkin(
             user_id=self.user.id,
             checkin_type=checkin_type,
             status=CheckinStatus.IN_PROGRESS,
+            flow_variant=variant,
+            # Snapshot, to report later how long before sleep the day review was.
+            bedtime=self.user.bedtime if checkin_type == CheckinType.EVENING else None,
             tz_name=self.user.timezone,
             created_at_utc=utcnow(),
             question_status={},
@@ -126,9 +141,26 @@ class CheckinEngine:
         self._mark(checkin, question, GATE_NO if question.kind == Kind.GATE else SKIPPED)
         await self.session.flush()
 
-    async def answer(self, checkin: Checkin, question: Question, raw: str | list[str]) -> None:
+    async def answer(
+        self, checkin: Checkin, question: Question, raw: str | list[str]
+    ) -> ParkedThought | None:
+        """Store an answer. Returns a parked thought only when the owner just
+        postponed it for the third time — the moment to offer the session list."""
         value = _validate(question, raw)
-        if question.kind == Kind.GATE:
+        suggest: ParkedThought | None = None
+        if question.kind == Kind.PARK:
+            assert isinstance(value, str)
+            await thoughts.park(self.session, self.user, value)
+            self._mark(checkin, question, ANSWERED)
+        elif question.kind == Kind.THOUGHT:
+            assert isinstance(value, str)
+            thought = await thoughts.walk_thought_today(self.session, self.user)
+            if thought is not None and await thoughts.resolve(
+                self.session, self.user, thought, thoughts.Action(value)
+            ):
+                suggest = thought
+            self._mark(checkin, question, ANSWERED)
+        elif question.kind == Kind.GATE:
             self._mark(checkin, question, GATE_YES if value == "yes" else GATE_NO)
         elif question.kind == Kind.MULTI:
             assert isinstance(value, list)
@@ -149,6 +181,7 @@ class CheckinEngine:
                 checkin.battery_reserve_pct = self.user.battery_reserve_pct
             self._mark(checkin, question, ANSWERED)
         await self.session.flush()
+        return suggest
 
     async def add_note(self, checkin: Checkin, text: str) -> None:
         checkin.notes = self._append(checkin.notes, text.strip())

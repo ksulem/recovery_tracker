@@ -17,6 +17,7 @@ from recovery.db.models import (
     DiscussionItem,
     LoadEvent,
     Message,
+    ParkedThought,
     RecoveryEvent,
     SafetyEvent,
     ScheduledPrompt,
@@ -34,6 +35,7 @@ PER_USER = [
     ScheduledPrompt,
     Consent,
     SafetyEvent,
+    ParkedThought,
 ]
 
 

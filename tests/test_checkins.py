@@ -107,6 +107,8 @@ async def test_evening_short_path_with_multi_select(make_client: Any, db: Factor
     await client.click_button(ru.BTN_NO)
     assert client.last_text() == ru.Q_TOMORROW  # detail block left out
     await client.click_button(ru.BTN_SKIP)
+    assert client.last_text() == ru.Q_PARK  # closing of the day
+    await client.click_button(ru.BTN_NOTHING)
     assert client.last_text() == ru.OUTRO_EVENING
 
     async with db() as s:
@@ -137,6 +139,8 @@ async def test_evening_detail_block(make_client: Any, db: Factory) -> None:
     await client.click_button("слёзы")
     await client.click_button(ru.BTN_DONE)
     await client.send("Не планировать встречи")
+    assert client.last_text() == ru.Q_PARK
+    await client.click_button(ru.BTN_NOTHING)
     assert client.last_text() == ru.OUTRO_EVENING
 
     [c] = await _checkins(db)

@@ -13,7 +13,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-from recovery import battery
+from recovery import battery, winddown
 from recovery.db.models import User
 from recovery.domain import BatteryColor
 from recovery.telegram.callbacks import BatteryCb, SettingsCb, SetupCb, encode_time
@@ -36,6 +36,9 @@ TIMEZONES = [
 MORNING_TIMES = ["07:30", "08:00", "08:30", "09:00", "09:30", "10:00"]
 EVENING_TIMES = ["20:00", "20:30", "21:00", "21:30", "22:00", "22:30"]
 SESSION_TIMES = ["09:00", "10:00", "11:00", "12:00", "15:00", "17:00", "18:00", "19:00"]
+BED_TIMES = ["22:00", "22:30", "23:00", "23:30", "00:00", "00:30"]
+WALK_TIMES = ["18:00", "18:30", "18:45", "19:00", "19:30", "20:00"]
+OPTIONAL_TIMES = {"bed", "walk"}  # can be cleared ("Не задавать")
 QUIET_PRESETS = [("22:00–08:00", "2200-0800"), ("23:00–09:00", "2300-0900")]
 
 
@@ -81,6 +84,17 @@ def summary(user: User) -> str:
         if user.battery_enabled
         else ru.SUMMARY_BATTERY_OFF
     )
+    start = winddown.boundary(user)
+    lines.append(
+        ru.SUMMARY_BEDTIME.format(bedtime=fmt(user.bedtime), start=fmt(start))
+        if user.bedtime is not None
+        else ru.SUMMARY_NO_BEDTIME
+    )
+    lines.append(
+        ru.SUMMARY_WALK.format(time=fmt(user.walk_time))
+        if user.walk_time is not None
+        else ru.SUMMARY_NO_WALK
+    )
     return "\n".join(lines)
 
 
@@ -98,6 +112,7 @@ def settings_keyboard(user: User) -> InlineKeyboardMarkup:
             [(ru.BTN_SET_TIMEZONE, item("tz"))],
             [(ru.BTN_SET_MORNING, item("morning")), (ru.BTN_SET_EVENING, item("evening"))],
             [(ru.BTN_SET_SESSION, item("session")), (ru.BTN_SET_QUIET, item("quiet"))],
+            [(ru.BTN_SET_BEDTIME, item("bed")), (ru.BTN_SET_WALK, item("walk"))],
             [(ru.BTN_SET_BATTERY, item("battery"))],
             [
                 (
@@ -119,6 +134,8 @@ def _time_keyboard(field: str, options: list[str]) -> InlineKeyboardMarkup:
     buttons = [(t, SetupCb(field=field, v=encode_time(t)).pack()) for t in options]
     rows = chunk(buttons, 3)
     rows.append([(ru.BTN_OTHER, SetupCb(field=field, v="other").pack())])
+    if field in OPTIONAL_TIMES:
+        rows.append([(ru.BTN_NOT_SET, SetupCb(field=field, v="none").pack())])
     return build(rows)
 
 
@@ -135,6 +152,8 @@ async def ask_time(bot: Bot, user: User, field: str) -> None:
         "morning": (ru.ASK_MORNING_TIME, MORNING_TIMES),
         "evening": (ru.ASK_EVENING_TIME, EVENING_TIMES),
         "stime": (ru.ASK_SESSION_TIME, SESSION_TIMES),
+        "bed": (ru.ASK_BEDTIME, BED_TIMES),
+        "walk": (ru.ASK_WALK_TIME, WALK_TIMES),
     }
     text, options = prompts[field]
     await bot.send_message(user.telegram_id, text, reply_markup=_time_keyboard(field, options))
@@ -191,7 +210,32 @@ async def after_step(
         await ask_time(bot, user, "stime")
         return
     await settings_changed(user)
+    if field in ("evening", "bed") and winddown.evening_too_late(user):
+        await warn_evening_too_late(bot, user)
+        return
     await show_settings(bot, user, ru.SETTINGS_SAVED)
+
+
+async def warn_evening_too_late(bot: Bot, user: User) -> None:
+    """The day review should end at least an hour before sleep: offer — not
+    force — an earlier evening check-in."""
+    suggested = winddown.suggested_evening_time(user)
+    assert suggested is not None
+    await bot.send_message(
+        user.telegram_id,
+        ru.EVENING_TOO_LATE.format(evening=fmt(user.evening_time), suggested=fmt(suggested)),
+        reply_markup=build(
+            [
+                [
+                    (
+                        ru.BTN_MOVE_TO.format(time=fmt(suggested)),
+                        SetupCb(field="evening", v=encode_time(fmt(suggested))).pack(),
+                    )
+                ],
+                [(ru.BTN_LEAVE_AS_IS, SetupCb(field="keep", v="-").pack())],
+            ]
+        ),
+    )
 
 
 # --- handlers -----------------------------------------------------------------------
@@ -248,6 +292,8 @@ async def on_settings_item(
         "evening": lambda: ask_time(bot, user, "evening"),
         "session": lambda: ask_session_day(bot, user),
         "quiet": lambda: ask_quiet_hours(bot, user),
+        "bed": lambda: ask_time(bot, user, "bed"),
+        "walk": lambda: ask_time(bot, user, "walk"),
     }
     await prompts[item]()
 
@@ -278,13 +324,19 @@ async def on_setup_choice(
             await bot.send_message(user.telegram_id, ru.ASK_TIME_TEXT)
         return
 
+    if field == "keep":
+        await state.set_state(None)
+        await show_settings(bot, user, ru.SETTINGS_SAVED)
+        return
     if field == "tz":
         zone = parse_timezone(value)
         if zone is None:
             await bot.send_message(user.telegram_id, ru.TIMEZONE_BAD)
             return
         user.timezone = zone
-    elif field in ("morning", "evening", "stime"):
+    elif field in OPTIONAL_TIMES and value == "none":
+        _set_time(user, field, None)
+    elif field in ("morning", "evening", "stime", *OPTIONAL_TIMES):
         parsed = parse_time(f"{value[:2]}:{value[2:]}")
         if parsed is None:
             await bot.send_message(user.telegram_id, ru.TIME_BAD)
@@ -307,13 +359,17 @@ async def on_setup_choice(
     await after_step(field, bot, user, state, settings_changed)
 
 
-def _set_time(user: User, field: str, value: time) -> None:
-    if field == "morning":
+def _set_time(user: User, field: str, value: time | None) -> None:
+    if field == "morning" and value is not None:
         user.morning_time = value
-    elif field == "evening":
+    elif field == "evening" and value is not None:
         user.evening_time = value
     elif field == "stime":
         user.session_time = value
+    elif field == "bed":
+        user.bedtime = value
+    elif field == "walk":
+        user.walk_time = value
 
 
 async def on_timezone_text(

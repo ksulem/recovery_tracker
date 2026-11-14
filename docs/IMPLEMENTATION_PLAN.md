@@ -413,8 +413,9 @@ questions, reports or reminders after the wind-down boundary, one-line replies.
   evenings an hour or more before sleep), parked / resolved / open thoughts.
   Counts only: no streaks, no "success rate".
 - Data: `users.bedtime`, `users.walk_time`; `checkins.bedtime` snapshot and
-  `checkins.flow_variant` ('short'); table `parked_thoughts`; prompt kind
-  `pre_walk`. Migration `0004`.
+  `checkins.flow_variant` ('short'); table `parked_thoughts` (with a `seq`
+  identity column, so thoughts written in one message keep their order);
+  prompt kind `pre_walk`. Migration `0004`.
 
 ### Phase B — question engine (`feature/question-engine`)
 

@@ -22,6 +22,7 @@ from recovery.health import start_health_server
 from recovery.logging_setup import setup_logging
 from recovery.scheduler.service import CheckinScheduler
 from recovery.telegram.routers.reports import send_session_brief
+from recovery.telegram.routers.thoughts import send_pre_walk
 
 logger = logging.getLogger("recovery")
 
@@ -29,6 +30,7 @@ BOT_COMMANDS = [
     BotCommand(command="morning", description="Утренний опрос"),
     BotCommand(command="evening", description="Вечерний опрос"),
     BotCommand(command="now", description="Отметить состояние сейчас"),
+    BotCommand(command="later", description="Отложить мысль на потом"),
     BotCommand(command="discuss", description="Добавить пункт для сессии"),
     BotCommand(command="session", description="Сводка к сессии"),
     BotCommand(command="week", description="Записи за неделю (файл)"),
@@ -81,8 +83,12 @@ async def run() -> None:
         bot,
         session_factory,
         reminder_delay_minutes=settings.reminder_delay_minutes,
+        evening_reminder_delay_minutes=settings.evening_reminder_delay_minutes,
         catchup_window_minutes=settings.catchup_window_minutes,
-        extra_senders={PromptKind.SESSION_BRIEF: send_session_brief},
+        extra_senders={
+            PromptKind.SESSION_BRIEF: send_session_brief,
+            PromptKind.PRE_WALK: send_pre_walk,
+        },
     )
     dp = build_dispatcher(
         owner_id=settings.owner_user_id,
