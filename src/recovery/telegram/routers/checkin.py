@@ -19,7 +19,14 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from recovery.conversation.engine import CheckinEngine, InvalidAnswer, flow_for, next_question
+from recovery import battery
+from recovery.conversation.engine import (
+    CheckinEngine,
+    InvalidAnswer,
+    disabled_features,
+    flow_for,
+    next_question,
+)
 from recovery.conversation.flows import FLOWS, Kind, Question
 from recovery.db.models import Checkin, User
 from recovery.domain import CheckinStatus, CheckinType
@@ -58,7 +65,7 @@ async def _ask(bot: Bot, user: User, state: FSMContext, checkin: Checkin, q: Que
 async def _advance(
     bot: Bot, user: User, state: FSMContext, engine: CheckinEngine, checkin: Checkin
 ) -> None:
-    question = next_question(checkin)
+    question = next_question(checkin, skip_features=disabled_features(user))
     if question is not None:
         await _ask(bot, user, state, checkin, question)
         return
@@ -220,13 +227,22 @@ async def on_answer(
             )
         else:
             await engine.answer(checkin, question, callback_data.v)
-            label = question.option_label(callback_data.v)
+            label = (
+                battery.bar(int(callback_data.v), user.battery_color, user.battery_reserve_pct)
+                if question.kind == Kind.PERCENT
+                else question.option_label(callback_data.v)
+            )
     except InvalidAnswer:
         await cb.answer(ru.STALE_QUESTION)
         return
 
     await cb.answer()
     await _close_prompt(bot, user.telegram_id, prompt, _answered_text(question, label))
+    if question.kind == Kind.PERCENT and battery.in_reserve(
+        checkin.battery_pct, checkin.battery_reserve_pct
+    ):
+        # Exercise, step 4: a low charge is information, not a failure.
+        await bot.send_message(user.telegram_id, ru.BATTERY_IN_RESERVE[checkin.checkin_type])
     await _advance(bot, user, state, engine, checkin)
 
 

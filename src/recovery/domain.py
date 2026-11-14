@@ -153,3 +153,15 @@ class ConsentKind(StrEnum):
 class SafetySource(StrEnum):
     KEYWORD = "keyword"
     LLM = "llm"
+
+
+class BatteryColor(StrEnum):
+    """The "battery" exercise: the reserve is pictured in a favourite colour."""
+
+    RED = "red"
+    ORANGE = "orange"
+    YELLOW = "yellow"
+    GREEN = "green"
+    BLUE = "blue"
+    PURPLE = "purple"
+    BROWN = "brown"

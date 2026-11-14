@@ -44,3 +44,8 @@ class SessionCb(CallbackData, prefix="ss"):
 
 class DeleteCb(CallbackData, prefix="del"):
     op: str  # yes | no
+
+
+class BatteryCb(CallbackData, prefix="bt"):
+    op: str  # toggle | reserve | setreserve | color | setcolor | back
+    v: str = ""

@@ -39,6 +39,7 @@ from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 from recovery.clock import utcnow
 from recovery.db.base import Base
 from recovery.domain import (
+    BatteryColor,
     CheckinStatus,
     CheckinType,
     Comparison,
@@ -111,6 +112,8 @@ class User(Base):
     __table_args__ = (
         between("session_weekday", 0, 6),
         between("session_brief_lead_hours", 0, 48),
+        between("battery_reserve_pct", 0, 100),
+        one_of("battery_color", BatteryColor),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -135,6 +138,15 @@ class User(Base):
     onboarding_completed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # "Battery" exercise: a subjective charge (%) the owner estimates herself —
+    # the bot never computes one. The reserve is a line she chooses not to go below.
+    battery_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    battery_reserve_pct: Mapped[int | None] = mapped_column(SmallInteger)
+    battery_color: Mapped[str] = mapped_column(
+        Text, nullable=False, default=BatteryColor.GREEN, server_default=text("'green'")
+    )
     created_at_utc: Mapped[datetime] = utc_column(default=True)
 
 
@@ -149,6 +161,8 @@ class Checkin(LocalTimeMixin, Base):
         between("cognitive_score", 0, 10),
         between("overall_score", 0, 10),
         between("interest_score", 0, 5),
+        between("battery_pct", 0, 100),
+        between("battery_reserve_pct", 0, 100),
         one_of("sleep_quality", SleepQuality),
         one_of("comparison_to_morning", Comparison),
         one_of("day_outlook", DayOutlook),
@@ -179,6 +193,11 @@ class Checkin(LocalTimeMixin, Base):
     cognitive_score: Mapped[int | None] = mapped_column(SmallInteger)
     overall_score: Mapped[int | None] = mapped_column(SmallInteger)
     interest_score: Mapped[int | None] = mapped_column(SmallInteger)
+    # Self-estimated battery charge, 0–100 in steps of 10, and the reserve that
+    # was set at that moment (a snapshot, like tz_name: later changes to the
+    # reserve don't rewrite history).
+    battery_pct: Mapped[int | None] = mapped_column(SmallInteger)
+    battery_reserve_pct: Mapped[int | None] = mapped_column(SmallInteger)
 
     sleep_quality: Mapped[str | None] = mapped_column(Text)
     comparison_to_morning: Mapped[str | None] = mapped_column(Text)

@@ -13,8 +13,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
+from recovery import battery
 from recovery.db.models import User
-from recovery.telegram.callbacks import SettingsCb, SetupCb, encode_time
+from recovery.domain import BatteryColor
+from recovery.telegram.callbacks import BatteryCb, SettingsCb, SetupCb, encode_time
 from recovery.telegram.hooks import SettingsChanged
 from recovery.telegram.keyboards import build, chunk
 from recovery.texts import ru
@@ -74,7 +76,17 @@ def summary(user: User) -> str:
     lines.append(
         ru.SUMMARY_TRANSCRIPTS_ON if user.store_transcripts else ru.SUMMARY_TRANSCRIPTS_OFF
     )
+    lines.append(
+        ru.SUMMARY_BATTERY_ON.format(reserve=_reserve_text(user))
+        if user.battery_enabled
+        else ru.SUMMARY_BATTERY_OFF
+    )
     return "\n".join(lines)
+
+
+def _reserve_text(user: User) -> str:
+    reserve = user.battery_reserve_pct
+    return f"{reserve}%" if reserve is not None else ru.BATTERY_NO_RESERVE
 
 
 def settings_keyboard(user: User) -> InlineKeyboardMarkup:
@@ -86,6 +98,7 @@ def settings_keyboard(user: User) -> InlineKeyboardMarkup:
             [(ru.BTN_SET_TIMEZONE, item("tz"))],
             [(ru.BTN_SET_MORNING, item("morning")), (ru.BTN_SET_EVENING, item("evening"))],
             [(ru.BTN_SET_SESSION, item("session")), (ru.BTN_SET_QUIET, item("quiet"))],
+            [(ru.BTN_SET_BATTERY, item("battery"))],
             [
                 (
                     ru.BTN_REMINDERS_ON if user.reminders_enabled else ru.BTN_REMINDERS_OFF,
@@ -224,6 +237,11 @@ async def on_settings_item(
                 reply_markup=settings_keyboard(user),
             )
         return
+    if item == "battery":
+        await bot.send_message(
+            user.telegram_id, battery_settings_text(user), reply_markup=battery_keyboard(user)
+        )
+        return
     prompts = {
         "tz": lambda: ask_timezone(bot, user),
         "morning": lambda: ask_time(bot, user, "morning"),
@@ -332,12 +350,90 @@ async def on_quiet_text(
     await after_step("quiet", bot, user, state, settings_changed)
 
 
+# --- battery exercise settings ---------------------------------------------------------
+def battery_settings_text(user: User) -> str:
+    example_pct = 60
+    return ru.BATTERY_SETTINGS.format(
+        state=ru.BATTERY_ON if user.battery_enabled else ru.BATTERY_OFF,
+        reserve=_reserve_text(user),
+        color=f"{battery.SQUARES[BatteryColor(user.battery_color)]} "
+        f"{ru.COLOR_LABELS[user.battery_color]}",
+        example=battery.bar(example_pct, user.battery_color, user.battery_reserve_pct),
+    )
+
+
+def battery_keyboard(user: User) -> InlineKeyboardMarkup:
+    return build(
+        [
+            [
+                (
+                    ru.BTN_BATTERY_ON if user.battery_enabled else ru.BTN_BATTERY_OFF,
+                    BatteryCb(op="toggle").pack(),
+                )
+            ],
+            [
+                (ru.BTN_BATTERY_RESERVE, BatteryCb(op="reserve").pack()),
+                (ru.BTN_BATTERY_COLOR, BatteryCb(op="color").pack()),
+            ],
+            [(ru.BTN_BACK, BatteryCb(op="back").pack())],
+        ]
+    )
+
+
+def _reserve_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        (f"{pct}%", BatteryCb(op="setreserve", v=str(pct)).pack())
+        for pct in battery.RESERVE_OPTIONS
+    ]
+    rows = chunk(buttons, 5)
+    rows.append([(ru.BTN_NO_RESERVE, BatteryCb(op="setreserve", v="none").pack())])
+    return build(rows)
+
+
+def _color_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        (f"{square} {ru.COLOR_LABELS[color]}", BatteryCb(op="setcolor", v=color).pack())
+        for color, square in battery.SQUARES.items()
+    ]
+    return build(chunk(buttons, 2))
+
+
+async def on_battery_settings(
+    cb: CallbackQuery, callback_data: BatteryCb, bot: Bot, user: User
+) -> None:
+    await cb.answer()
+    op, value = callback_data.op, callback_data.v
+    if op == "back":
+        await show_settings(bot, user)
+        return
+    if op in ("reserve", "color"):
+        text, keyboard = (
+            (ru.ASK_BATTERY_RESERVE, _reserve_keyboard())
+            if op == "reserve"
+            else (ru.ASK_BATTERY_COLOR, _color_keyboard())
+        )
+        if cb.message is not None:
+            await cb.message.edit_text(text, reply_markup=keyboard)  # type: ignore[union-attr]
+        return
+    if op == "toggle":
+        user.battery_enabled = not user.battery_enabled
+    elif op == "setreserve":
+        user.battery_reserve_pct = None if value == "none" else int(value)
+    elif op == "setcolor" and value in {c.value for c in BatteryColor}:
+        user.battery_color = value
+    if cb.message is not None:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            battery_settings_text(user), reply_markup=battery_keyboard(user)
+        )
+
+
 def make_router() -> Router:
     router = Router(name="setup")
     router.message.register(cmd_start, CommandStart())
     router.message.register(cmd_help, Command("help"))
     router.message.register(cmd_settings, Command("settings"))
     router.callback_query.register(on_settings_item, SettingsCb.filter())
+    router.callback_query.register(on_battery_settings, BatteryCb.filter())
     router.callback_query.register(on_setup_choice, SetupCb.filter())
     not_command = ~F.text.startswith("/")
     router.message.register(on_timezone_text, SetupStates.timezone, F.text, not_command)

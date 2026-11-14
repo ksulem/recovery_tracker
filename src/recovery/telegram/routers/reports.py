@@ -20,6 +20,7 @@ from recovery.reports.digest import (
     fmt_period,
     last_session,
     open_discussion_items,
+    reserve_count_line,
     session_brief,
     week_markdown,
 )
@@ -45,6 +46,7 @@ async def send_session_brief(bot: Bot, session: AsyncSession, user: User) -> Non
     lines = [
         ru.SESSION_TITLE.format(period=fmt_period(brief.start, brief.end)),
         coverage_line(brief.digest),
+        *([reserve] if (reserve := reserve_count_line(brief.digest)) else []),
         "",
     ]
     if brief.items:

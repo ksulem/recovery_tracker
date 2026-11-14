@@ -97,8 +97,8 @@ async def test_crisis_message_stops_the_flow(make_client: Any, db: Factory) -> N
     async with db() as s:
         c = await s.scalar(select(Checkin))
     assert c is not None and c.status == CheckinStatus.IN_PROGRESS and c.notes is None
-    await client.click_button("5")  # the open question still works
-    assert client.last_text() == ru.Q_PLEASANT_DESIRE
+    await client.click_button("50%")  # the open question still works
+    assert client.last_text() == ru.Q_PHYSICAL_NOW
 
 
 async def test_crisis_number_is_configurable(make_client: Any) -> None:
@@ -113,12 +113,14 @@ async def test_week_export_reflects_exactly_the_records(make_client: Any, db: Fa
     with time_machine.travel(day(3, 7), tick=False):
         await client.send("/morning")
         await client.click_button("Хорошо")
+        await client.click_button("40%")
         await client.click_button("7")
         for _ in range(3):
             await client.click_button(ru.BTN_SKIP)
     with time_machine.travel(day(5, 19), tick=False):
         await client.send("/evening")
         await client.click_button("Хуже")
+        await client.click_button("20%")
         await client.click_button("Работа")
         await client.click_button(ru.BTN_DONE)
         await client.click_button(ru.BTN_SKIP)
@@ -141,7 +143,10 @@ async def test_week_export_reflects_exactly_the_records(make_client: Any, db: Fa
     assert filename == "week-2026-11-09.md"
     assert "# Неделя: 3–9 ноября 2026" in text
     assert "Записи есть за 3 из 7 дн." in text
-    assert "после сна: хорошо · физическая энергия: 7/10" in text
+    assert "после сна: хорошо · заряд: 40% · физическая энергия: 7/10" in text
+    assert "- Заряд: 20%" in text
+    assert "## Батарейка\n\n- Вт, 3 ноября 2026: утро 40%\n- Чт, 5 ноября 2026: вечер 20%" in text
+    assert "резерва" not in text  # no reserve set → no reserve count
     assert "Забирало силы: работа, умственные задачи" in text
     # Each resource separately; no average anywhere.
     assert (
@@ -220,6 +225,7 @@ async def test_session_brief_is_sent_by_the_scheduler(make_client: Any, db: Fact
 async def test_export_all(make_client: Any) -> None:
     client = make_client()
     await client.send("/now")
+    await client.click_button("40%")
     await client.click_button("4")
     await client.click_button(ru.BTN_FINISH)
     await client.send("Заметка")
@@ -228,7 +234,7 @@ async def test_export_all(make_client: Any) -> None:
     assert filename.startswith("recovery-export-") and filename.endswith(".json")
     data = json.loads(text)
     assert data["user"]["telegram_id"] == 1001
-    assert [c["overall_score"] for c in data["checkins"]] == [4]
+    assert [(c["battery_pct"], c["overall_score"]) for c in data["checkins"]] == [(40, 4)]
     assert [m["text"] for m in data["messages"]] == ["Заметка"]
     assert set(data) >= {"checkin_symptoms", "discussion_items", "therapy_sessions"}
 

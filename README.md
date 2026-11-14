@@ -23,13 +23,33 @@ Nothing is shared between copies, and the bot answers only its owner.
 | `/discuss` | Add an item to discuss at your next session |
 | `/session` | Factual summary since your last session, plus a Markdown file |
 | `/week` | The last 7 days as a Markdown file |
-| `/settings` | Times, timezone, session, quiet hours, reminders |
+| `/settings` | Times, timezone, session, quiet hours, reminders, the battery |
 | `/privacy`, `/export_all`, `/delete_me` | What is stored; full JSON export; delete everything |
 
 Check-in prompts arrive at your local times. You get at most one gentle
 reminder, and none after "Не сейчас" or during quiet hours. The session summary
 arrives 3 hours before the session. If a message suggests immediate danger, the
 bot stops the normal flow and shows an emergency number.
+
+### The battery
+
+Based on a common self-care exercise: picture a phone-like battery, set part of
+its charge aside as a **reserve** in your favourite colour, notice what drains and
+what recharges it, and on a low morning plan the day around the charge you have
+instead of blaming yourself.
+
+- Morning, evening and `/now` ask "Заряд батарейки сейчас?" with buttons
+  0%–100% in steps of 10. The answer is shown as a bar in your colour, with the
+  reserve marked by `|`, for example `🟪🟪🟪|🟪⬜⬜⬜⬜⬜⬜ 40%`.
+- If the charge is at or below your reserve, the bot adds one gentle note
+  (for example, that the day can be lived on the charge you have).
+- `/week` and `/session` list each day's charges and count how many mornings
+  were at or below the reserve. Counts only, never averages.
+- `/settings → 🔋 Батарейка`: turn the question on or off, set the reserve
+  (10–50% or none) and the colour.
+
+The charge is always your own estimate. The bot never computes a charge or
+assigns a "cost" to activities.
 
 ## What a check-in looks like
 
@@ -38,35 +58,38 @@ Answers are buttons. Every question has **Пропустить** (skip) and **З
 unfinished check-in the same day, the bot offers **Продолжить / Начать заново /
 Не сейчас** (continue / start over / not now).
 
-**Morning** (`/morning`, about 30 seconds)
+**Morning** (`/morning`, under a minute)
 
 | # | Question | Answer |
 |---|---|---|
 | 1 | Как ты сегодня после сна? *(How are you after sleep?)* | Хорошо · Средне · Плохо |
-| 2 | Насколько сейчас ощущается физическая энергия? *(Physical energy right now?)* | 0 … 10 |
-| 3 | Есть ли желание заняться чем-нибудь приятным? *(Do you feel like doing something pleasant?)* | Нет · Немного · Да |
-| 4 | Насколько тяжело представлять сегодняшний день? *(How hard does today look?)* | Не тяжело · Терпимо · Очень тяжело |
-| 5 | Ожидается сегодня что-то особенно энергозатратное? *(Anything especially draining today?)* | free text |
+| 2 | Заряд твоей батарейки сейчас, после сна? *(Battery charge after sleep?)* | 0% … 100% |
+| 3 | Насколько сейчас ощущается физическая энергия? *(Physical energy right now?)* | 0 … 10 |
+| 4 | Есть ли желание заняться чем-нибудь приятным? *(Do you feel like doing something pleasant?)* | Нет · Немного · Да |
+| 5 | Насколько тяжело представлять сегодняшний день? *(How hard does today look?)* | Не тяжело · Терпимо · Очень тяжело |
+| 6 | Ожидается сегодня что-то особенно энергозатратное? *(Anything especially draining today?)* | free text |
 
 **Evening** (`/evening`, under 2 minutes, plus an optional detailed block)
 
 | # | Question | Answer |
 |---|---|---|
 | 1 | Как ты сейчас по сравнению с утром? *(Compared to the morning?)* | Лучше · Так же · Хуже |
-| 2 | Что сегодня сильнее всего забирало силы? *(What drained you most?)* | several of: Работа, умственные задачи · Переживания, стресс · Общение · Физическая активность, быт · Необходимость принимать решения |
-| 3 | Что помогало восстановиться? *(What helped you recover?)* | several of: Побыть дома в одиночестве · Сон, отдых без обязательств · Сериалы, книги, игры · Хобби · Прогулка · Общение с близкими · Спокойные бытовые дела · Другое |
-| 4 | Остались ли силы на что-нибудь приятное? *(Any energy left for something pleasant?)* | Да, и получилось · Хотелось, но не было сил · Ничего не хотелось · Не знаю |
-| 5 | Хочешь отметить состояние подробнее? *(Add more detail? About a minute)* | Да · Нет |
+| 2 | Заряд батарейки сейчас? *(Battery charge now?)* | 0% … 100% |
+| 3 | Что сегодня сильнее всего забирало силы? *(What drained you most?)* | several of: Работа, умственные задачи · Переживания, стресс · Общение · Физическая активность, быт · Необходимость принимать решения |
+| 4 | Что помогало восстановиться? *(What helped you recover?)* | several of: Побыть дома в одиночестве · Сон, отдых без обязательств · Сериалы, книги, игры · Хобби · Прогулка · Общение с близкими · Спокойные бытовые дела · Другое |
+| 5 | Остались ли силы на что-нибудь приятное? *(Any energy left for something pleasant?)* | Да, и получилось · Хотелось, но не было сил · Ничего не хотелось · Не знаю |
+| 6 | Хочешь отметить состояние подробнее? *(Add more detail? About a minute)* | Да · Нет |
 | ↳ | *If yes:* physical, emotional, social and cognitive resource, overall wellbeing *(each 0–10)*; interest in things *(0–5, from "ничего не хочется" to "хочется нового")*; signs of overload *(e.g. "Хочется, чтобы никто не трогал", "Раздражительность", "Приятное ощущается как нагрузка")* | |
-| 6 | Есть ли что-то важное, что стоит учесть завтра? *(Anything to keep in mind for tomorrow?)* | free text |
+| 7 | Есть ли что-то важное, что стоит учесть завтра? *(Anything to keep in mind for tomorrow?)* | free text |
 
 **Right now** (`/now`: "Отметить состояние сейчас", for when you feel bad between check-ins)
 
 | # | Question | Answer |
 |---|---|---|
-| 1 | Как ты сейчас в целом? *(How are you overall?)* | 0 (очень плохо) … 10 (хорошо) |
-| 2 | Что сейчас происходит? *(What's going on?)* | several signs of overload, as above |
-| 3 | Если хочется — опиши словами, что происходит. *(Describe it in words, if you like)* | free text |
+| 1 | Заряд батарейки сейчас? *(Battery charge now?)* | 0% … 100% |
+| 2 | Как ты сейчас в целом? *(How are you overall?)* | 0 (очень плохо) … 10 (хорошо) |
+| 3 | Что сейчас происходит? *(What's going on?)* | several signs of overload, as above |
+| 4 | Если хочется — опиши словами, что происходит. *(Describe it in words, if you like)* | free text |
 
 The questions are plain data in
 [`src/recovery/conversation/flows.py`](src/recovery/conversation/flows.py), and

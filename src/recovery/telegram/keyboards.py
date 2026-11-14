@@ -33,6 +33,9 @@ def question_keyboard(
     if question.kind == Kind.SCALE_10:
         buttons = [(str(n), cb("set", str(n))) for n in range(11)]
         rows = [buttons[:6], buttons[6:]]
+    elif question.kind == Kind.PERCENT:
+        buttons = [(f"{n}%", cb("set", str(n))) for n in range(0, 101, 10)]
+        rows = [buttons[:6], buttons[6:]]
     elif question.kind in (Kind.SCALE_5, Kind.CHOICE, Kind.GATE):
         buttons = [(o.label, cb("set", o.value)) for o in question.options]
         short = all(len(o.label) <= 12 for o in question.options)
