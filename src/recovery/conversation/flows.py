@@ -1,12 +1,22 @@
 """Check-in flows declared as data.
 
 A flow is an ordered list of questions. The engine asks the first question
-that has no status yet; questions in a ``block`` are asked only after their
-gate question was answered "yes" (the optional "подробнее" part of the
-evening check-in keeps the default path short).
+that has no status yet and whose conditions hold:
+
+* ``block`` — asked only after its gate question was answered "yes" (the
+  optional "подробнее" part of the evening check-in);
+* ``feature`` — asked only if that optional feature/question set is on;
+* ``when`` — asked only if an earlier answer contains one of the given values;
+* ``every_days`` — asked only on every N-th local day (e.g. every other evening);
+* ``each`` — a *template* repeated for every item selected in a multi-select
+  question (at most ``max_items`` of the source), e.g. "как это было?" per
+  episode. Consecutive templates over the same source form a group and are
+  asked item by item. Instance ids are ``"<template>.<item>"``; ``{item}`` in
+  the text and in ``when`` is replaced by the item's label / value.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import date
 from enum import StrEnum
 
 from recovery import battery
@@ -52,12 +62,34 @@ class Question:
     block: str | None = None  # asked only if the gate for this block said yes
     opens: str | None = None  # for GATE questions
     feature: str | None = None  # asked only if this optional feature is enabled
+    when: tuple[str, frozenset[str]] | None = None  # (question id, any of these values)
+    every_days: int | None = None  # asked only when local_date.toordinal() % N == 0
+    # Multi-select: an exclusive "ничего из этого" option — answered, not skipped.
+    none_option: str | None = None
+    max_items: int | None = None  # multi-select: how many items templates expand to
+    each: str | None = None  # template: repeat for each item selected in this question
+    items: frozenset[str] | None = None  # template: only for these items
+    item: str | None = None  # set on an expanded instance
 
     def option_label(self, value: str) -> str:
         for option in self.options:
             if option.value == value:
                 return option.label
         return value
+
+    def instance(self, item: str, label: str) -> "Question":
+        when = self.when
+        if when is not None:
+            when = (when[0].format(item=item), when[1])
+        return replace(
+            self,
+            id=f"{self.id}.{item}",
+            text=self.text.format(item=label),
+            each=None,
+            items=None,
+            item=item,
+            when=when,
+        )
 
 
 @dataclass(frozen=True)
@@ -68,7 +100,79 @@ class Flow:
     questions: tuple[Question, ...]
 
     def get(self, question_id: str) -> Question | None:
-        return next((q for q in self.questions if q.id == question_id), None)
+        """A question by id, including expanded template instances."""
+        base, _, item = question_id.partition(".")
+        question = next((q for q in self.questions if q.id == base), None)
+        if question is None or not item:
+            return question if question is not None and question.each is None else None
+        source = self.get(question.each) if question.each else None
+        if source is None or item not in {o.value for o in source.options}:
+            return None
+        return question.instance(item, source.option_label(item))
+
+    def expanded(self, answers: dict[str, object]) -> list[Question]:
+        """The flow with templates expanded for the items selected so far."""
+        out: list[Question] = []
+        questions = self.questions
+        i = 0
+        while i < len(questions):
+            first = questions[i]
+            if first.each is None:
+                out.append(first)
+                i += 1
+                continue
+            group = [first]
+            while i + len(group) < len(questions) and questions[i + len(group)].each == first.each:
+                group.append(questions[i + len(group)])
+            i += len(group)
+            source = self.get(first.each)
+            selected = answers.get(first.each)
+            if source is None or not isinstance(selected, list):
+                continue
+            chosen = [v for v in selected if v != source.none_option]
+            for item in chosen[: source.max_items]:
+                for template in group:
+                    if template.items is None or item in template.items:
+                        out.append(template.instance(item, source.option_label(item)))
+        return out
+
+
+def _matches(answer: object, values: frozenset[str]) -> bool:
+    if isinstance(answer, list):
+        return any(v in values for v in answer)
+    return isinstance(answer, str) and answer in values
+
+
+def pick_next(
+    flow: Flow,
+    status: dict[str, str],
+    answers: dict[str, object],
+    skip_features: frozenset[str] | set[str] = frozenset(),
+    day: date | None = None,
+    gate_yes: str = "yes",
+) -> Question | None:
+    """The next question to ask — pure, so the rules are easy to test."""
+    questions = flow.expanded(answers)
+    open_blocks = {
+        q.opens for q in questions if q.kind == Kind.GATE and status.get(q.id) == gate_yes
+    }
+    for question in questions:
+        if question.id in status:
+            continue
+        if question.feature and question.feature in skip_features:
+            continue
+        if question.block and question.block not in open_blocks:
+            # The gate comes before its block in the flow, so by now it was
+            # answered "no" or skipped: leave the optional block out.
+            continue
+        if question.when is not None and not _matches(
+            answers.get(question.when[0]), question.when[1]
+        ):
+            continue
+        if question.every_days and day is not None and day.toordinal() % question.every_days:
+            continue
+        return question
+    return None
 
 
 def _options(labels: dict[str, str]) -> tuple[Option, ...]:
@@ -76,6 +180,10 @@ def _options(labels: dict[str, str]) -> tuple[Option, ...]:
 
 
 WALK_FEATURE = "walk"
+
+# Optional question sets the owner can switch off in /settings →
+# "Дополнительные вопросы": feature name → (button label, description).
+FEATURE_SETS: dict[str, tuple[str, str]] = {}
 
 THOUGHT_ACTIONS = (
     Option("done", ru.BTN_THOUGHT_DONE),

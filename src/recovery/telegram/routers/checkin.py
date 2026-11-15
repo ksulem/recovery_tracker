@@ -266,10 +266,13 @@ async def on_answer(
 
     if callback_data.op == "tog":
         selected: list[str] = list(data.get("sel", []))
-        if callback_data.v in selected:
-            selected.remove(callback_data.v)
+        value, none = callback_data.v, question.none_option
+        if value in selected:
+            selected.remove(value)
+        elif value == none:
+            selected = [value]  # "ничего из этого" clears the rest
         else:
-            selected.append(callback_data.v)
+            selected = [v for v in selected if v != none] + [value]
         await state.update_data(sel=selected)
         await cb.answer()
         if cb.message is not None:

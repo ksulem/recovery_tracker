@@ -58,3 +58,7 @@ class ThoughtCb(CallbackData, prefix="th"):
     op: str
     t: str = ""  # thought id, hex
     a: str = ""  # for "act": done | later | session | drop
+
+
+class FeatureCb(CallbackData, prefix="ft"):
+    f: str  # feature set name, or "back"

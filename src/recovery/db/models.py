@@ -35,7 +35,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy import text as sql_text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from recovery.clock import utcnow
@@ -155,6 +155,10 @@ class User(Base):
     # thought for later. Both optional: without them that behaviour is off.
     bedtime: Mapped[time | None] = mapped_column(Time)
     walk_time: Mapped[time | None] = mapped_column(Time)
+    # Optional question sets the owner switched off (see flows.FEATURE_SETS).
+    disabled_features: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
+    )
     created_at_utc: Mapped[datetime] = utc_column(default=True)
 
 
@@ -225,6 +229,11 @@ class Checkin(LocalTimeMixin, Base):
     # question id -> "answered" | "skipped". Distinguishes "skipped" from
     # "never asked" (both leave the value NULL) and drives resume.
     question_status: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    # question id -> raw choice answer (value or list of values). Drives
+    # conditional and per-item questions; free text is not copied here.
+    answers: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
 
