@@ -8,6 +8,7 @@ The data lives in Postgres, so buttons keep working after a restart.
 
 import html
 import logging
+import uuid
 from contextlib import suppress
 
 from aiogram import Bot, F, Router
@@ -19,7 +20,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from recovery import battery, thoughts, winddown
+from recovery import battery, discussion, thoughts, winddown
 from recovery.conversation.engine import (
     CheckinEngine,
     InvalidAnswer,
@@ -31,7 +32,7 @@ from recovery.conversation.flows import Kind, Question, get_flow
 from recovery.db.models import Checkin, ParkedThought, User
 from recovery.domain import CheckinStatus, CheckinType, FlowVariant
 from recovery.scheduler.prompts import cancel_reminder
-from recovery.telegram.callbacks import AnswerCb, StartCb, ThoughtCb, short_id
+from recovery.telegram.callbacks import AnswerCb, PinCb, StartCb, ThoughtCb, short_id
 from recovery.telegram.keyboards import (
     build,
     offer_keyboard,
@@ -341,11 +342,36 @@ async def on_text_in_checkin(
         await _close_prompt(
             bot, user.telegram_id, data.get("prompt"), _answered_text(question, label)
         )
+        if question.column == "preoccupation_note":
+            await bot.send_message(
+                user.telegram_id,
+                ru.PIN_OFFER,
+                reply_markup=build([[(ru.BTN_THOUGHT_SESSION, PinCb(c=checkin.id.hex).pack())]]),
+            )
         await _advance(bot, user, state, engine, checkin)
         return
     # A free-form remark while a button question is open: keep it as a note.
     await engine.add_note(checkin, text)
     await message.answer(ru.NOTE_ADDED)
+
+
+async def on_pin(
+    cb: CallbackQuery, callback_data: PinCb, bot: Bot, session: AsyncSession, user: User
+) -> None:
+    checkin = await CheckinEngine(session, user).get(uuid.UUID(hex=callback_data.c))
+    if checkin is None or not checkin.preoccupation_note:
+        await cb.answer(ru.STALE_QUESTION)
+        return
+    await discussion.add_item(session, user, checkin.preoccupation_note)
+    count = await discussion.count_open(session, user)
+    await cb.answer(ru.DISCUSS_ADDED.format(count=count))
+    if cb.message is not None:
+        await _close_prompt(
+            bot,
+            user.telegram_id,
+            cb.message.message_id,
+            ru.DISCUSS_ADDED.format(count=count),
+        )
 
 
 def make_router() -> Router:
@@ -355,6 +381,7 @@ def make_router() -> Router:
     router.message.register(cmd_now, Command("now"))
     router.callback_query.register(on_start_button, StartCb.filter())
     router.callback_query.register(on_answer, AnswerCb.filter())
+    router.callback_query.register(on_pin, PinCb.filter())
     router.message.register(
         on_text_in_checkin, CheckinStates.active, F.text, ~F.text.startswith("/")
     )

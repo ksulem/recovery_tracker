@@ -50,17 +50,27 @@ from recovery.domain import (
     DayOutlook,
     DiscussionStatus,
     Effect,
+    EpisodeChoice,
+    EpisodeEffect,
+    EpisodeKind,
     FlowVariant,
     InputType,
     Intensity,
     LoadCategory,
+    MarkKind,
+    Obligations,
     PartOfDay,
     PleasantDesire,
     PleasantEnergy,
+    Preoccupation,
+    PreSleepActivity,
+    PressureSignal,
     PromptKind,
     PromptStatus,
     RecoveryActivity,
+    Resource,
     SafetySource,
+    SleepOnset,
     SleepQuality,
     Source,
     Symptom,
@@ -181,6 +191,9 @@ class Checkin(LocalTimeMixin, Base):
         one_of("pleasant_desire", PleasantDesire),
         one_of("pleasant_energy", PleasantEnergy),
         one_of("flow_variant", FlowVariant),
+        one_of("obligations", Obligations),
+        one_of("preoccupation", Preoccupation),
+        one_of("sleep_onset", SleepOnset),
         # At most one live morning and one live evening check-in per local day;
         # "start over" abandons the old one. Ad-hoc check-ins are unlimited.
         Index(
@@ -220,6 +233,11 @@ class Checkin(LocalTimeMixin, Base):
     expected_heavy_load: Mapped[str | None] = mapped_column(Text)
     tomorrow_note: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
+    # Week-2 hypothesis questions (evening) and sleep questions (morning).
+    obligations: Mapped[str | None] = mapped_column(Text)
+    preoccupation: Mapped[str | None] = mapped_column(Text)
+    preoccupation_note: Mapped[str | None] = mapped_column(Text)
+    sleep_onset: Mapped[str | None] = mapped_column(Text)
     # NULL = the regular flow; 'short' = the late-evening version.
     flow_variant: Mapped[str | None] = mapped_column(Text)
     # Bedtime at the time of the check-in (snapshot), to report when the day
@@ -247,6 +265,68 @@ class CheckinSymptom(Base):
     )
     symptom: Mapped[str] = mapped_column(Text, primary_key=True)
     source: Mapped[str] = mapped_column(Text, nullable=False, default=Source.BUTTON)
+
+
+def _subset_of(column: str, enum: type[StrEnum]) -> CheckConstraint:
+    values = ", ".join(f"'{member.value}'" for member in enum)
+    return CheckConstraint(f"{column} <@ ARRAY[{values}]::text[]", name=f"{column}_valid")
+
+
+class DayEpisode(LocalTimeMixin, Base):
+    """Something notable in the day and what it did: gave, took, both or
+    neither — and, for "both", which resources it gave and which it took."""
+
+    __tablename__ = "day_episodes"
+    __table_args__ = (
+        one_of("kind", EpisodeKind),
+        one_of("effect", EpisodeEffect),
+        one_of("choice", EpisodeChoice),
+        one_of("source", Source),
+        _subset_of("gave", Resource),
+        _subset_of("took", Resource),
+        UniqueConstraint("checkin_id", "kind", name="uq_day_episodes_checkin_kind"),
+        Index("ix_day_episodes_user_date", "user_id", "local_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = user_fk()
+    checkin_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("checkins.id", ondelete="CASCADE")
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    effect: Mapped[str | None] = mapped_column(Text)  # NULL: not rated (cap or skipped)
+    gave: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
+    )
+    took: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
+    )
+    choice: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(Text, nullable=False, default=Source.BUTTON)
+
+
+class CheckinMark(Base):
+    """Multi-select answers from small closed lists: pressure on oneself
+    (evening) and what happened before sleep (morning)."""
+
+    __tablename__ = "checkin_marks"
+    __table_args__ = (
+        one_of("kind", MarkKind),
+        CheckConstraint(
+            "(kind = 'pressure' AND value IN ("
+            + ", ".join(f"'{v.value}'" for v in PressureSignal)
+            + ")) OR (kind = 'pre_sleep' AND value IN ("
+            + ", ".join(f"'{v.value}'" for v in PreSleepActivity)
+            + "))",
+            name="value_valid",
+        ),
+    )
+
+    checkin_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("checkins.id", ondelete="CASCADE"), primary_key=True
+    )
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, primary_key=True)
 
 
 class Message(LocalTimeMixin, Base):

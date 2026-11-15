@@ -24,7 +24,7 @@ Nothing is shared between copies, and the bot answers only its owner.
 | `/discuss` | Add an item to discuss at your next session |
 | `/session` | Factual summary since your last session, plus a Markdown file |
 | `/week` | The last 7 days as a Markdown file |
-| `/settings` | Times, timezone, session, quiet hours, reminders, the battery, bedtime, evening walk |
+| `/settings` | Times, timezone, session, quiet hours, reminders, the battery, bedtime, evening walk, optional question sets |
 | `/privacy`, `/export_all`, `/delete_me` | What is stored; full JSON export; delete everything |
 
 Check-in prompts arrive at your local times. You get at most one gentle
@@ -88,31 +88,48 @@ Answers are buttons. Every question has **Пропустить** (skip) and **З
 unfinished check-in the same day, the bot offers **Продолжить / Начать заново /
 Не сейчас** (continue / start over / not now).
 
-**Morning** (`/morning`, under a minute)
+Questions marked 🧩 belong to optional sets that can be switched off in
+`/settings → 🧩 Дополнительные вопросы`: **Как получилось заснуть** (morning)
+and **Вопросы для проверки гипотез** (evening).
+
+**Morning** (`/morning`, about a minute)
 
 | # | Question | Answer |
 |---|---|---|
 | 1 | Как ты сегодня после сна? *(How are you after sleep?)* | Хорошо · Средне · Плохо |
-| 2 | Заряд твоей батарейки сейчас, после сна? *(Battery charge after sleep?)* | 0% … 100% |
-| 3 | Насколько сейчас ощущается физическая энергия? *(Physical energy right now?)* | 0 … 10 |
-| 4 | Есть ли желание заняться чем-нибудь приятным? *(Do you feel like doing something pleasant?)* | Нет · Немного · Да |
-| 5 | Насколько тяжело представлять сегодняшний день? *(How hard does today look?)* | Не тяжело · Терпимо · Очень тяжело |
-| 6 | Ожидается сегодня что-то особенно энергозатратное? *(Anything especially draining today?)* | free text |
+| 2 | 🧩 Как получилось заснуть? *(How did falling asleep go?)* | Легко · Долго крутились мысли · Трудно по другой причине |
+| 3 | 🧩 Было ли перед сном что-то из этого? *(Before sleep, was there any of this?)* | several of: Видео, сериалы · Покупки или каталоги · Соцсети · or Ничего из этого |
+| 4 | Заряд твоей батарейки сейчас, после сна? *(Battery charge after sleep?)* | 0% … 100% |
+| 5 | Насколько сейчас ощущается физическая энергия? *(Physical energy right now?)* | 0 … 10 |
+| 6 | Есть ли желание заняться чем-нибудь приятным? *(Do you feel like doing something pleasant?)* | Нет · Немного · Да |
+| 7 | Насколько тяжело представлять сегодняшний день? *(How hard does today look?)* | Не тяжело · Терпимо · Очень тяжело |
+| 8 | Ожидается сегодня что-то особенно энергозатратное? *(Anything especially draining today?)* | free text |
 
-**Evening** (`/evening`, under 2 minutes, plus an optional detailed block)
+**Evening** (`/evening`, about 2–3 minutes, plus an optional detailed block)
 
 | # | Question | Answer |
 |---|---|---|
 | 1 | Как ты сейчас по сравнению с утром? *(Compared to the morning?)* | Лучше · Так же · Хуже |
 | 2 | Заряд батарейки сейчас? *(Battery charge now?)* | 0% … 100% |
-| 3 | Что сегодня сильнее всего забирало силы? *(What drained you most?)* | several of: Работа, умственные задачи · Переживания, стресс · Общение · Физическая активность, быт · Необходимость принимать решения |
-| 4 | Что помогало восстановиться? *(What helped you recover?)* | several of: Побыть дома в одиночестве · Сон, отдых без обязательств · Сериалы, книги, игры · Хобби · Прогулка · Общение с близкими · Спокойные бытовые дела · Другое |
-| 5 | Остались ли силы на что-нибудь приятное? *(Any energy left for something pleasant?)* | Да, и получилось · Хотелось, но не было сил · Ничего не хотелось · Не знаю |
-| 6 | Хочешь отметить состояние подробнее? *(Add more detail? About a minute)* | Да · Нет |
+| 3 | 🧩 Сколько сегодня было обязательств? *(How many obligations today?)* | Не было · Немного · Много |
+| 4 | Что было заметного сегодня? *(What was notable today?)* — the day's episodes | several of: Общение с близкими · Общение по работе или обязательное · Много людей, новые люди · Работа, умственные задачи · Быт · Прогулка, движение · Хобби · Сериалы, книги, игры · Побыть в одиночестве · Сон, отдых · Переживания · Решения · Требования к себе · or Ничего особенного |
+| ↳ | *For each of the first three picked:* «… — как это было?» *(How was it?)* | Дало силы · Забрало силы · И то, и другое · Почти не повлияло |
+| ↳ | *Only for "И то, и другое":* «…: что дало?» and «…: что забрало?» | several of: Эмоционально · Телу · Общение · Голове |
+| ↳ | 🧩 *Social contact and chores:* «… — по своему желанию или по необходимости?» | По желанию · По необходимости |
+| 5 | 🧩 Есть ли что-то, о чём постоянно думаешь, или ситуация, которая продолжает занимать? *(Anything you keep thinking about?)* | Нет · Немного · Да, сильно; if yes, an optional short note with a "📌 На сессию" button |
+| 6 | Остались ли силы на что-нибудь приятное? *(Any energy left for something pleasant?)* | Да, и получилось · Хотелось, но не было сил · Ничего не хотелось · Не знаю |
+| 7 | 🧩 *Every other evening:* Было ли сегодня что-то из этого? *(Any of this today?)* | several of: Казалось, что надо быть продуктивнее · Чувство вины за отдых · Казалось, что недостаточно стараюсь восстановиться · or Ничего из этого |
+| 8 | Хочешь отметить состояние подробнее? *(Add more detail? About a minute)* | Да · Нет |
 | ↳ | *If yes:* physical, emotional, social and cognitive resource, overall wellbeing *(each 0–10)*; interest in things *(0–5, from "ничего не хочется" to "хочется нового")*; signs of overload *(e.g. "Хочется, чтобы никто не трогал", "Раздражительность", "Приятное ощущается как нагрузка")* | |
-| 7 | Есть ли что-то важное, что стоит учесть завтра? *(Anything to keep in mind for tomorrow?)* | free text |
-| 8 | *Only if a thought was taken on the walk:* Мысль с прогулки — что с ней? *(The walk thought: what about it?)* | Обдумано · Пусть полежит · На сессию · Неактуально |
-| 9 | Что-то ещё крутится в голове? Можно отложить на завтра *(Anything else on your mind? Park it until tomorrow)* | free text, one thought per line · Ничего |
+| 9 | Есть ли что-то важное, что стоит учесть завтра? *(Anything to keep in mind for tomorrow?)* | free text |
+| 10 | *Only if a thought was taken on the walk:* Мысль с прогулки — что с ней? *(The walk thought: what about it?)* | Обдумано · Пусть полежит · На сессию · Неактуально |
+| 11 | Что-то ещё крутится в голове? Можно отложить на завтра *(Anything else on your mind? Park it until tomorrow)* | free text, one thought per line · Ничего |
+
+Day episodes replace the earlier two whole-day lists ("что забирало силы" /
+"что помогало"). When the same thing showed up in both, there was no way to
+tell what it gave and what it took. Now each episode says it: for example,
+"общение с близкими — и то, и другое (дало эмоционально; забрало силы тела;
+по желанию)". Older records keep showing as they were stored.
 
 **Right now** (`/now`: "Отметить состояние сейчас", for when you feel bad between check-ins)
 

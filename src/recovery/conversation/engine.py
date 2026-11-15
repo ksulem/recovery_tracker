@@ -28,13 +28,15 @@ from recovery.conversation.flows import (
 )
 from recovery.db.models import (
     Checkin,
+    CheckinMark,
     CheckinSymptom,
+    DayEpisode,
     LoadEvent,
     ParkedThought,
     RecoveryEvent,
     User,
 )
-from recovery.domain import CheckinStatus, CheckinType, Source
+from recovery.domain import CheckinStatus, CheckinType, MarkKind, Source
 
 ANSWERED = "answered"
 SKIPPED = "skipped"
@@ -179,7 +181,7 @@ class CheckinEngine:
             else:
                 chosen = [v for v in value if v != question.none_option]
                 self._remember(checkin, question, value)
-                self._store_many(checkin, question, chosen)
+                await self._store_many(checkin, question, chosen)
                 self._mark(checkin, question, ANSWERED)
         else:
             assert isinstance(value, str)
@@ -222,18 +224,53 @@ class CheckinEngine:
         """Raw choice answers, for conditional and per-item questions."""
         checkin.answers = {**(checkin.answers or {}), question.id: value}
 
+    async def _episode(self, checkin: Checkin, kind: str | None) -> DayEpisode | None:
+        if kind is None:
+            return None
+        return await self.session.scalar(
+            select(DayEpisode).where(DayEpisode.checkin_id == checkin.id, DayEpisode.kind == kind)
+        )
+
     async def _store_one(self, checkin: Checkin, question: Question, value: str) -> None:
-        """Answers that live outside ``checkins`` columns (filled in by later phases)."""
-        return None
+        """Single-choice answers that live outside ``checkins`` columns."""
+        episode = await self._episode(checkin, question.item)
+        if episode is None:
+            return
+        if question.target == Target.EPISODE_EFFECT:
+            episode.effect = value
+        elif question.target == Target.EPISODE_CHOICE:
+            episode.choice = value
 
     @staticmethod
     def _append(existing: str | None, text: str) -> str:
         return f"{existing}\n{text}" if existing else text
 
-    def _store_many(self, checkin: Checkin, question: Question, values: list[str]) -> None:
+    async def _store_many(self, checkin: Checkin, question: Question, values: list[str]) -> None:
         common = {"tz_name": checkin.tz_name, "created_at_utc": utcnow()}
+        if question.target in (Target.EPISODE_GAVE, Target.EPISODE_TOOK):
+            episode = await self._episode(checkin, question.item)
+            if episode is not None:
+                if question.target == Target.EPISODE_GAVE:
+                    episode.gave = list(values)
+                else:
+                    episode.took = list(values)
+            return
         for value in values:
-            if question.target == Target.SYMPTOMS:
+            if question.target == Target.EPISODES:
+                self.session.add(
+                    DayEpisode(
+                        user_id=self.user.id,
+                        checkin_id=checkin.id,
+                        kind=value,
+                        source=Source.BUTTON,
+                        **common,
+                    )
+                )
+            elif question.target in (Target.PRESSURE, Target.PRE_SLEEP):
+                pressure = question.target == Target.PRESSURE
+                mark = MarkKind.PRESSURE if pressure else MarkKind.PRE_SLEEP
+                self.session.add(CheckinMark(checkin_id=checkin.id, kind=mark, value=value))
+            elif question.target == Target.SYMPTOMS:
                 self.session.add(
                     CheckinSymptom(checkin_id=checkin.id, symptom=value, source=Source.BUTTON)
                 )

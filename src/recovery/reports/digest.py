@@ -19,7 +19,9 @@ from recovery.battery import in_reserve
 from recovery.clock import local_today
 from recovery.db.models import (
     Checkin,
+    CheckinMark,
     CheckinSymptom,
+    DayEpisode,
     DiscussionItem,
     LoadEvent,
     Message,
@@ -33,6 +35,7 @@ from recovery.domain import (
     CheckinType,
     DiscussionStatus,
     InputType,
+    MarkKind,
     ThoughtStatus,
 )
 from recovery.texts import ru
@@ -84,6 +87,8 @@ class Day:
         default_factory=lambda: defaultdict(list)
     )
     notes: list[Message] = field(default_factory=list)
+    episodes: dict[uuid.UUID, list[DayEpisode]] = field(default_factory=lambda: defaultdict(list))
+    marks: dict[tuple[uuid.UUID, str], list[str]] = field(default_factory=lambda: defaultdict(list))
 
     @property
     def has_records(self) -> bool:
@@ -136,6 +141,16 @@ async def collect(session: AsyncSession, user: User, start: date, end: date) -> 
             )
         ).all():
             days[by_id[s.checkin_id].local_date].symptoms[s.checkin_id].append(s.symptom)
+        for mark in (
+            await session.scalars(select(CheckinMark).where(CheckinMark.checkin_id.in_(by_id)))
+        ).all():
+            day = days[by_id[mark.checkin_id].local_date]
+            day.marks[(mark.checkin_id, mark.kind)].append(mark.value)
+        for e in (
+            await session.scalars(select(DayEpisode).where(DayEpisode.checkin_id.in_(by_id)))
+        ).all():
+            if e.checkin_id is not None:
+                days[by_id[e.checkin_id].local_date].episodes[e.checkin_id].append(e)
 
     loads = (
         await session.scalars(
@@ -195,12 +210,47 @@ def _charge(c: Checkin) -> str:
     return text
 
 
+def _marks_line(c: Checkin, day: Day, kind: str, qid: str, labels: dict[str, str]) -> str | None:
+    """Marked values; "ничего из этого" when that was the answer; None if skipped."""
+    values = day.marks.get((c.id, kind), [])
+    if values:
+        return _labels(values, labels)
+    if (c.answers or {}).get(qid) == ["none"]:
+        return labels["none"].lower()
+    return None
+
+
+def episode_text(e: DayEpisode) -> str:
+    """'общение с близкими — и то, и другое (дало: эмоционально; забрало: телу; по желанию)'."""
+    text = ru.EPISODE_LABELS[e.kind].lower()
+    if e.effect:
+        text += f" — {ru.EFFECT_LABELS[e.effect].lower()}"
+    details = []
+    if e.gave:
+        details.append(f"дало: {_labels(e.gave, ru.RESOURCE_LABELS)}")
+    if e.took:
+        details.append(f"забрало: {_labels(e.took, ru.RESOURCE_LABELS)}")
+    if e.choice:
+        details.append(ru.CHOICE_LABELS[e.choice].lower())
+    if details:
+        text += f" ({'; '.join(details)})"
+    return text
+
+
+def _ordered_episodes(c: Checkin, day: Day) -> list[DayEpisode]:
+    order = (c.answers or {}).get("ep") or []
+    episodes = day.episodes.get(c.id, [])
+    return sorted(episodes, key=lambda e: order.index(e.kind) if e.kind in order else 99)
+
+
 def _checkin_lines(c: Checkin, day: Day) -> list[str]:
     lines: list[str] = []
     if c.checkin_type == CheckinType.MORNING:
         head = []
         if c.sleep_quality:
             head.append(f"после сна: {ru.SLEEP_LABELS.get(c.sleep_quality, '?').lower()}")
+        if c.sleep_onset:
+            head.append(f"заснуть: {ru.SLEEP_ONSET_LABELS[c.sleep_onset].lower()}")
         if c.battery_pct is not None:
             head.append(f"заряд: {_charge(c)}")
         if c.physical_score is not None:
@@ -211,6 +261,9 @@ def _checkin_lines(c: Checkin, day: Day) -> list[str]:
             head.append(f"день: {ru.OUTLOOK_LABELS[c.day_outlook].lower()}")
         if head:
             lines.append(" · ".join(head))
+        pre_sleep = _marks_line(c, day, MarkKind.PRE_SLEEP, "presleep", ru.PRE_SLEEP_LABELS)
+        if pre_sleep:
+            lines.append(f"Перед сном: {pre_sleep}")
         if c.expected_heavy_load:
             lines.append(f"Ожидалось энергозатратное: «{c.expected_heavy_load}»")
     else:
@@ -222,6 +275,19 @@ def _checkin_lines(c: Checkin, day: Day) -> list[str]:
             lines.append(f"Заряд: {_charge(c)}")
         if c.checkin_type == CheckinType.AD_HOC and c.overall_score is not None:
             lines.append(f"Общее состояние: {c.overall_score}/10")
+        if c.obligations:
+            lines.append(f"Обязательств: {ru.OBLIGATIONS_LABELS[c.obligations].lower()}")
+        episodes = _ordered_episodes(c, day)
+        if episodes:
+            lines.append("Эпизоды дня:")
+            lines.extend(f"  - {episode_text(e)}" for e in episodes)
+        elif (c.answers or {}).get("ep") == ["none"]:
+            lines.append("Эпизоды дня: ничего особенного")
+        if c.preoccupation:
+            text = f"Занимает мысли: {ru.PREOCCUPATION_LABELS[c.preoccupation].lower()}"
+            if c.preoccupation_note:
+                text += f" — «{c.preoccupation_note}»"
+            lines.append(text)
         loads = day.loads.get(c.id, [])
         if loads:
             lines.append(f"Забирало силы: {_labels([e.category for e in loads], ru.LOAD_LABELS)}")
@@ -230,6 +296,9 @@ def _checkin_lines(c: Checkin, day: Day) -> list[str]:
             lines.append(f"Помогало: {_labels([e.activity for e in recs], ru.RECOVERY_LABELS)}")
         if c.pleasant_energy:
             lines.append(f"Силы на приятное: {ru.ENERGY_LABELS[c.pleasant_energy].lower()}")
+        pressure = _marks_line(c, day, MarkKind.PRESSURE, "press", ru.PRESSURE_LABELS)
+        if pressure:
+            lines.append(f"Давление на себя: {pressure}")
         scores = None if c.checkin_type == CheckinType.AD_HOC else _scores_line(c)
         if scores:
             lines.append(f"Ресурсы (0–10): {scores}")
@@ -264,7 +333,8 @@ def render_day(day: Day) -> str:
             title += " (не закончен)"
         out += ["", f"**{title}**"]  # blank line: keeps Markdown lists apart
         if lines:
-            out.extend(f"- {line}" for line in lines)
+            # Lines already formatted as nested items ("  - …") keep their indent.
+            out.extend(line if line.startswith("  - ") else f"- {line}" for line in lines)
         else:
             out.append("- ответов нет")
     if day.notes:

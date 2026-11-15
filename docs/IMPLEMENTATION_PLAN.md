@@ -447,8 +447,9 @@ and what exactly did it give or take?
    необходимости?".
 
 Stored in one `day_episodes` table with a direction (gave / took / both /
-neutral) and affected resources. Old `load_events` / `recovery_events` stay and
-are shown as "took" / "gave" in reports.
+neutral), the resources it gave / took (`text[]`) and the choice. Old
+`load_events` / `recovery_events` stay and keep rendering as they were stored.
+Pressure signals and pre-sleep activities go to `checkin_marks`. Migration `0006`.
 
 **Other evening additions** (all in a toggleable "hypotheses" set):
 - "Сколько сегодня было обязательств?" Не было · Немного · Много.
