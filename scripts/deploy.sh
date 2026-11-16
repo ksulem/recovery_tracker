@@ -87,8 +87,10 @@ set_image "$IMAGE"
 if RECOVERY_IMAGE="$IMAGE" docker compose up -d --no-build migrate bot && wait_healthy; then
     log "bot is healthy"
 else
-    log "deploy failed; last bot logs:"
-    docker compose logs --tail 40 bot || true
+    # Bot logs are NOT printed here: this output ends up in the Actions log,
+    # which is public for a public repo, and the bot's logs contain its
+    # username and may contain chat ids. Read them on the server instead.
+    log "deploy failed; see the logs on the server: docker compose logs --tail 100 bot"
     if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$IMAGE" ]; then
         log "rolling back to $PREVIOUS"
         set_image "$PREVIOUS"

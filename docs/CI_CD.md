@@ -28,8 +28,11 @@ A release is never deployed without passing CI: CD calls the CI workflow first.
    - runs `docker compose up -d --no-build migrate bot`: migrations first,
      then the bot;
    - waits up to 3 minutes for the bot's healthcheck. If the bot doesn't get
-     healthy, it prints the bot's last logs, starts the previous image again
-     and fails the workflow;
+     healthy, it starts the previous image again and fails the workflow. The
+     bot's own logs are deliberately not printed: Actions logs of a public
+     repository are public, and the bot's logs contain its username and may
+     contain chat ids. Read them on the server with
+     `docker compose logs --tail 100 bot`;
    - removes older images of this project, keeping the current and the
      previous one.
 
