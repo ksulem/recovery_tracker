@@ -78,6 +78,15 @@ wait_healthy() {
 
 # --- deploy -----------------------------------------------------------------------
 PREVIOUS=$(current_image)
+if [ -z "$PREVIOUS" ]; then
+    # First deploy through CD: .env has no RECOVERY_IMAGE yet because the
+    # running bot was built on the server. Use that image as the rollback
+    # target, so a failed first release doesn't leave the bot down.
+    running=$(docker compose ps -q bot 2>/dev/null || true)
+    if [ -n "$running" ]; then
+        PREVIOUS=$(docker inspect -f '{{.Config.Image}}' "$running" 2>/dev/null || true)
+    fi
+fi
 log "deploying $IMAGE (previous: ${PREVIOUS:-none})"
 
 RECOVERY_IMAGE="$IMAGE" docker compose pull --quiet migrate bot || fail "pull failed"
