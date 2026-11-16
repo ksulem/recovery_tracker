@@ -1,0 +1,6 @@
+# Shell scripts, YAML and SQL run on Linux (server, CI): always LF, even when
+# the repo is checked out on Windows with core.autocrlf=true.
+*.sh  text eol=lf
+*.yml text eol=lf
+*.sql text eol=lf
+Dockerfile text eol=lf

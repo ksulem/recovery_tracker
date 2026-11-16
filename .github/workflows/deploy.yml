@@ -1,0 +1,130 @@
+name: CD
+
+# Release = push to main (dev → main). Steps:
+#   1. CI (the same checks as on dev and pull requests);
+#   2. build the image and push it to GHCR, tagged with the commit SHA;
+#   3. over SSH, check out that commit on the server and run
+#      scripts/deploy.sh, which pulls the image, runs migrations, restarts the
+#      bot and rolls back if it doesn't become healthy.
+#
+# The server never builds anything: a 1 GB VM shared with other services can't
+# spare the memory for a pip install.
+#
+# Off by default (forks of this public repo have no server): set the
+# repository variable DEPLOY_ENABLED=true and the secrets listed in
+# docs/CI_CD.md to turn it on. Re-deploy by hand: Actions → CD → Run workflow.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never two deploys at once, and never cancel one half-way.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build and push image
+    needs: ci
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Image name
+        id: image
+        # GHCR names must be lowercase.
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+        if: vars.IMAGE_PLATFORM != '' && vars.IMAGE_PLATFORM != 'linux/amd64'
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: ${{ vars.IMAGE_PLATFORM || 'linux/amd64' }}
+          tags: |
+            ${{ steps.image.outputs.image }}
+            ghcr.io/${{ github.repository }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=recovery-image
+          cache-to: type=gha,scope=recovery-image,mode=max
+
+  deploy:
+    name: Deploy to server
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Secrets live in this environment; it can also require a manual approval
+    # (Settings → Environments → production → Required reviewers).
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Set up SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$SSH_KEY" ] || [ -z "$KNOWN_HOSTS" ]; then
+            echo "::error::DEPLOY_SSH_KEY and DEPLOY_KNOWN_HOSTS secrets are required (see docs/CI_CD.md)"
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pinned host key: never trust whatever answers on first connect.
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          # Read-only, expires when this job ends. Sent over stdin, never as an
+          # argument, and used on the server through a throwaway Docker config.
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$DEPLOY_PATH" ]; then
+            echo "::error::DEPLOY_HOST, DEPLOY_USER and DEPLOY_PATH secrets are required (see docs/CI_CD.md)"
+            exit 1
+          fi
+          printf '%s\n' "$GHCR_TOKEN" | ssh \
+            -i ~/.ssh/deploy_key -p "$PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$USER@$HOST" \
+            "set -e; cd '$DEPLOY_PATH'; git fetch --quiet origin; git checkout --quiet --detach '$GITHUB_SHA'; GHCR_USER='$GHCR_USER' ./scripts/deploy.sh '$IMAGE'"
+
+      - name: Clean up
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

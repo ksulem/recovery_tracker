@@ -9,6 +9,9 @@
 # Already running Postgres in another Compose project on the same server?
 # See docker-compose.shared.yml.
 #
+# RECOVERY_IMAGE: unset, `--build` builds the image locally as recovery:local.
+# The CD workflow sets it to a pre-built image from GHCR (scripts/deploy.sh).
+#
 # All variables are RECOVERY_-prefixed so they can't clash with other projects'
 # variables on the same machine.
 name: recovery
@@ -47,6 +50,7 @@ services:
 
   migrate:
     build: .
+    image: ${RECOVERY_IMAGE:-recovery:local}
     command: ["alembic", "upgrade", "head"]
     logging: *default-logging
     environment:
@@ -58,6 +62,7 @@ services:
 
   bot:
     build: .
+    image: ${RECOVERY_IMAGE:-recovery:local}
     logging: *default-logging
     environment:
       RECOVERY_BOT_TOKEN: ${RECOVERY_BOT_TOKEN:?RECOVERY_BOT_TOKEN is required}
