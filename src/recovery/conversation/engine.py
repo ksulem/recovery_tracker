@@ -9,13 +9,23 @@
 
 import uuid
 from collections.abc import Collection
+from datetime import date
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from recovery import battery, thoughts
 from recovery.clock import local_today, utcnow
-from recovery.conversation.flows import WALK_FEATURE, Flow, Kind, Question, Target, get_flow
+from recovery.conversation.flows import (
+    WALK_FEATURE,
+    Flow,
+    Kind,
+    Question,
+    Target,
+    get_flow,
+    pick_next,
+)
 from recovery.db.models import (
     Checkin,
     CheckinSymptom,
@@ -41,7 +51,7 @@ def flow_for(checkin: Checkin) -> Flow:
 
 
 def disabled_features(user: User) -> frozenset[str]:
-    disabled = set()
+    disabled = set(user.disabled_features or ())
     if not user.battery_enabled:
         disabled.add(battery.FEATURE)
     if user.walk_time is None:
@@ -49,25 +59,21 @@ def disabled_features(user: User) -> frozenset[str]:
     return frozenset(disabled)
 
 
+def checkin_day(checkin: Checkin) -> date:
+    return checkin.created_at_utc.astimezone(ZoneInfo(checkin.tz_name)).date()
+
+
 def next_question(
     checkin: Checkin, skip_features: Collection[str] = frozenset()
 ) -> Question | None:
-    status = checkin.question_status
-    flow = flow_for(checkin)
-    open_blocks = {
-        q.opens for q in flow.questions if q.kind == Kind.GATE and status.get(q.id) == GATE_YES
-    }
-    for question in flow.questions:
-        if question.id in status:
-            continue
-        if question.feature and question.feature in skip_features:
-            continue
-        if question.block and question.block not in open_blocks:
-            # The gate comes before its block in the flow, so by now it was
-            # answered "no" or skipped: leave the optional block out.
-            continue
-        return question
-    return None
+    return pick_next(
+        flow_for(checkin),
+        checkin.question_status,
+        checkin.answers or {},
+        frozenset(skip_features),
+        day=checkin_day(checkin),
+        gate_yes=GATE_YES,
+    )
 
 
 def _validate(question: Question, value: str | list[str]) -> str | list[str]:
@@ -75,6 +81,8 @@ def _validate(question: Question, value: str | list[str]) -> str | list[str]:
     if question.kind == Kind.MULTI:
         if not isinstance(value, list) or any(v not in allowed for v in value):
             raise InvalidAnswer(question.id)
+        if question.none_option is not None and question.none_option in value:
+            return [question.none_option]  # "ничего из этого" excludes the rest
         return list(dict.fromkeys(value))  # de-duplicate, keep order
     if not isinstance(value, str):
         raise InvalidAnswer(question.id)
@@ -128,6 +136,7 @@ class CheckinEngine:
             tz_name=self.user.timezone,
             created_at_utc=utcnow(),
             question_status={},
+            answers={},
         )
         self.session.add(checkin)
         await self.session.flush()
@@ -161,16 +170,26 @@ class CheckinEngine:
                 suggest = thought
             self._mark(checkin, question, ANSWERED)
         elif question.kind == Kind.GATE:
+            self._remember(checkin, question, value)
             self._mark(checkin, question, GATE_YES if value == "yes" else GATE_NO)
         elif question.kind == Kind.MULTI:
             assert isinstance(value, list)
             if not value:
                 self._mark(checkin, question, SKIPPED)
             else:
-                self._store_many(checkin, question, value)
+                chosen = [v for v in value if v != question.none_option]
+                self._remember(checkin, question, value)
+                self._store_many(checkin, question, chosen)
                 self._mark(checkin, question, ANSWERED)
         else:
-            assert isinstance(value, str) and question.column
+            assert isinstance(value, str)
+            if question.kind != Kind.TEXT:  # raw choices only: free text stays in its column
+                self._remember(checkin, question, value)
+            if question.column is None:  # stored elsewhere (see _store_one)
+                await self._store_one(checkin, question, value)
+                self._mark(checkin, question, ANSWERED)
+                await self.session.flush()
+                return suggest
             numeric = question.kind in (Kind.SCALE_10, Kind.SCALE_5, Kind.PERCENT)
             stored: str | int = int(value) if numeric else value
             if question.kind == Kind.TEXT:
@@ -197,6 +216,15 @@ class CheckinEngine:
     def _mark(checkin: Checkin, question: Question, status: str) -> None:
         # Reassign (not mutate) so SQLAlchemy sees the JSONB change.
         checkin.question_status = {**checkin.question_status, question.id: status}
+
+    @staticmethod
+    def _remember(checkin: Checkin, question: Question, value: str | list[str]) -> None:
+        """Raw choice answers, for conditional and per-item questions."""
+        checkin.answers = {**(checkin.answers or {}), question.id: value}
+
+    async def _store_one(self, checkin: Checkin, question: Question, value: str) -> None:
+        """Answers that live outside ``checkins`` columns (filled in by later phases)."""
+        return None
 
     @staticmethod
     def _append(existing: str | None, text: str) -> str:

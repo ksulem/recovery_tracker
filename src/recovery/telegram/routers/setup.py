@@ -14,9 +14,10 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from recovery import battery, winddown
+from recovery.conversation.flows import FEATURE_SETS
 from recovery.db.models import User
 from recovery.domain import BatteryColor
-from recovery.telegram.callbacks import BatteryCb, SettingsCb, SetupCb, encode_time
+from recovery.telegram.callbacks import BatteryCb, FeatureCb, SettingsCb, SetupCb, encode_time
 from recovery.telegram.hooks import SettingsChanged
 from recovery.telegram.keyboards import build, chunk
 from recovery.texts import ru
@@ -114,6 +115,7 @@ def settings_keyboard(user: User) -> InlineKeyboardMarkup:
             [(ru.BTN_SET_SESSION, item("session")), (ru.BTN_SET_QUIET, item("quiet"))],
             [(ru.BTN_SET_BEDTIME, item("bed")), (ru.BTN_SET_WALK, item("walk"))],
             [(ru.BTN_SET_BATTERY, item("battery"))],
+            *([[(ru.BTN_SET_EXTRA, item("extra"))]] if FEATURE_SETS else []),
             [
                 (
                     ru.BTN_REMINDERS_ON if user.reminders_enabled else ru.BTN_REMINDERS_OFF,
@@ -284,6 +286,11 @@ async def on_settings_item(
     if item == "battery":
         await bot.send_message(
             user.telegram_id, battery_settings_text(user), reply_markup=battery_keyboard(user)
+        )
+        return
+    if item == "extra":
+        await bot.send_message(
+            user.telegram_id, extra_questions_text(), reply_markup=extra_questions_keyboard(user)
         )
         return
     prompts = {
@@ -483,6 +490,41 @@ async def on_battery_settings(
         )
 
 
+# --- optional question sets ------------------------------------------------------------
+def extra_questions_text() -> str:
+    lines = [ru.EXTRA_QUESTIONS_TITLE, ""]
+    lines += [f"<b>{label}</b> — {description}" for label, description in FEATURE_SETS.values()]
+    return "\n".join(lines)
+
+
+def extra_questions_keyboard(user: User) -> InlineKeyboardMarkup:
+    off = set(user.disabled_features or ())
+    rows = [
+        [(f"{'⬜' if name in off else '✅'} {label}", FeatureCb(f=name).pack())]
+        for name, (label, _) in FEATURE_SETS.items()
+    ]
+    rows.append([(ru.BTN_BACK, FeatureCb(f="back").pack())])
+    return build(rows)
+
+
+async def on_feature_toggle(
+    cb: CallbackQuery, callback_data: FeatureCb, bot: Bot, user: User
+) -> None:
+    await cb.answer()
+    if callback_data.f == "back":
+        await show_settings(bot, user)
+        return
+    if callback_data.f not in FEATURE_SETS:
+        return
+    off = set(user.disabled_features or ())
+    off ^= {callback_data.f}
+    user.disabled_features = sorted(off)  # reassign so the ARRAY change is saved
+    if cb.message is not None:
+        await cb.message.edit_reply_markup(  # type: ignore[union-attr]
+            reply_markup=extra_questions_keyboard(user)
+        )
+
+
 def make_router() -> Router:
     router = Router(name="setup")
     router.message.register(cmd_start, CommandStart())
@@ -490,6 +532,7 @@ def make_router() -> Router:
     router.message.register(cmd_settings, Command("settings"))
     router.callback_query.register(on_settings_item, SettingsCb.filter())
     router.callback_query.register(on_battery_settings, BatteryCb.filter())
+    router.callback_query.register(on_feature_toggle, FeatureCb.filter())
     router.callback_query.register(on_setup_choice, SetupCb.filter())
     not_command = ~F.text.startswith("/")
     router.message.register(on_timezone_text, SetupStates.timezone, F.text, not_command)
