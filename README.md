@@ -163,6 +163,11 @@ tell what it gave and what it took. Now each episode says it: for example,
 | 3 | Что сейчас происходит? *(What's going on?)* | several signs of overload, as above |
 | 4 | Если хочется — опиши словами, что происходит. *(Describe it in words, if you like)* | free text |
 
+Diagrams of every flow — which question comes after which, and what each one
+depends on (settings, earlier answers, every other day) — are in
+[`docs/FLOWS.md`](docs/FLOWS.md). They are generated from the code, so they
+always match what the bot asks.
+
 The questions are plain data in
 [`src/recovery/conversation/flows.py`](src/recovery/conversation/flows.py), and
 their wording is in [`src/recovery/texts/ru.py`](src/recovery/texts/ru.py).
