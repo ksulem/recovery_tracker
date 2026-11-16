@@ -12,8 +12,10 @@ from recovery.clock import local_today
 from recovery.db.base import Base
 from recovery.db.models import (
     Checkin,
+    CheckinMark,
     CheckinSymptom,
     Consent,
+    DayEpisode,
     DiscussionItem,
     LoadEvent,
     Message,
@@ -36,6 +38,7 @@ PER_USER = [
     Consent,
     SafetyEvent,
     ParkedThought,
+    DayEpisode,
 ]
 
 
@@ -69,5 +72,15 @@ async def export_json(session: AsyncSession, user: User) -> tuple[str, bytes]:
         else []
     )
     data["checkin_symptoms"] = [_row(s) for s in symptoms]
+    marks = (
+        (
+            await session.scalars(
+                select(CheckinMark).where(CheckinMark.checkin_id.in_(checkin_ids))
+            )
+        ).all()
+        if checkin_ids
+        else []
+    )
+    data["checkin_marks"] = [_row(m) for m in marks]
     body = json.dumps(data, ensure_ascii=False, indent=2).encode()
     return f"recovery-export-{local_today(user.timezone).isoformat()}.json", body

@@ -15,6 +15,8 @@ Factory = async_sessionmaker[AsyncSession]
 
 async def _setup_user(client: Any, db: Factory, **fields: Any) -> None:
     await client.send("/ping")  # creates the user row
+    # These tests are about the battery: leave the optional question sets out.
+    fields.setdefault("disabled_features", ["hypotheses", "sleep"])
     async with db() as s, s.begin():
         user = await s.scalar(select(User))
         assert user is not None
@@ -112,7 +114,7 @@ async def test_battery_question_can_be_turned_off(make_client: Any, db: Factory)
     assert client.last_text() == ru.Q_PHYSICAL_NOW
     await client.send("/evening")
     await client.click_button("Так же")
-    assert client.last_text().startswith(ru.Q_DRAINS)
+    assert client.last_text().startswith(ru.Q_EPISODES)
     await client.send("/now")
     assert client.last_text() == ru.Q_OVERALL_NOW
     assert all("battery" not in c.question_status for c in await _checkins(db))

@@ -41,8 +41,15 @@ class Target(StrEnum):
 
     COLUMN = "column"
     SYMPTOMS = "symptoms"
-    LOAD_EVENTS = "load_events"
-    RECOVERY_EVENTS = "recovery_events"
+    LOAD_EVENTS = "load_events"  # legacy: before day episodes
+    RECOVERY_EVENTS = "recovery_events"  # legacy: before day episodes
+    EPISODES = "episodes"  # one day_episodes row per selected item
+    EPISODE_EFFECT = "episode_effect"
+    EPISODE_GAVE = "episode_gave"
+    EPISODE_TOOK = "episode_took"
+    EPISODE_CHOICE = "episode_choice"
+    PRESSURE = "pressure"  # checkin_marks
+    PRE_SLEEP = "pre_sleep"  # checkin_marks
 
 
 @dataclass(frozen=True)
@@ -183,7 +190,15 @@ WALK_FEATURE = "walk"
 
 # Optional question sets the owner can switch off in /settings →
 # "Дополнительные вопросы": feature name → (button label, description).
-FEATURE_SETS: dict[str, tuple[str, str]] = {}
+HYPOTHESES_FEATURE = "hypotheses"
+SLEEP_FEATURE = "sleep"
+FEATURE_SETS: dict[str, tuple[str, str]] = {
+    HYPOTHESES_FEATURE: (ru.FEATURE_HYPOTHESES, ru.FEATURE_HYPOTHESES_HELP),
+    SLEEP_FEATURE: (ru.FEATURE_SLEEP, ru.FEATURE_SLEEP_HELP),
+}
+
+MAX_RATED_EPISODES = 3  # "как это было?" for at most three episodes an evening
+SOCIAL_AND_CHORES = frozenset({"close_people", "work_social", "crowd", "chores"})
 
 THOUGHT_ACTIONS = (
     Option("done", ru.BTN_THOUGHT_DONE),
@@ -223,6 +238,23 @@ MORNING = Flow(
             column="sleep_quality",
             options=_options(ru.SLEEP_LABELS),
         ),
+        Question(
+            "onset",
+            ru.Q_SLEEP_ONSET,
+            Kind.CHOICE,
+            column="sleep_onset",
+            options=_options(ru.SLEEP_ONSET_LABELS),
+            feature=SLEEP_FEATURE,
+        ),
+        Question(
+            "presleep",
+            ru.Q_PRE_SLEEP,
+            Kind.MULTI,
+            target=Target.PRE_SLEEP,
+            options=_options(ru.PRE_SLEEP_LABELS),
+            none_option="none",
+            feature=SLEEP_FEATURE,
+        ),
         _battery(ru.Q_BATTERY_MORNING),
         _scale("phys", ru.Q_PHYSICAL_NOW, "physical_score"),
         Question(
@@ -257,18 +289,76 @@ EVENING = Flow(
         ),
         _battery(ru.Q_BATTERY_NOW),
         Question(
-            "drain",
-            ru.Q_DRAINS,
+            "oblig",
+            ru.Q_OBLIGATIONS,
+            Kind.CHOICE,
+            column="obligations",
+            options=_options(ru.OBLIGATIONS_LABELS),
+            feature=HYPOTHESES_FEATURE,
+        ),
+        # Day episodes: one list, then "how was it?" per item (instead of two
+        # whole-day lists "drained" / "helped", which couldn't be interpreted
+        # when the same thing appeared in both).
+        Question(
+            "ep",
+            ru.Q_EPISODES,
             Kind.MULTI,
-            target=Target.LOAD_EVENTS,
-            options=_options({k: v for k, v in ru.LOAD_LABELS.items() if k != "mixed"}),
+            target=Target.EPISODES,
+            options=_options(ru.EPISODE_LABELS),
+            none_option="none",
+            max_items=MAX_RATED_EPISODES,
         ),
         Question(
-            "helped",
-            ru.Q_HELPED,
+            "rate",
+            ru.Q_EPISODE_RATE,
+            Kind.CHOICE,
+            target=Target.EPISODE_EFFECT,
+            options=_options(ru.EFFECT_LABELS),
+            each="ep",
+        ),
+        Question(
+            "gave",
+            ru.Q_EPISODE_GAVE,
             Kind.MULTI,
-            target=Target.RECOVERY_EVENTS,
-            options=_options(ru.RECOVERY_LABELS),
+            target=Target.EPISODE_GAVE,
+            options=_options(ru.RESOURCE_LABELS),
+            each="ep",
+            when=("rate.{item}", frozenset({"both"})),
+        ),
+        Question(
+            "took",
+            ru.Q_EPISODE_TOOK,
+            Kind.MULTI,
+            target=Target.EPISODE_TOOK,
+            options=_options(ru.RESOURCE_LABELS),
+            each="ep",
+            when=("rate.{item}", frozenset({"both"})),
+        ),
+        Question(
+            "why",
+            ru.Q_EPISODE_CHOICE,
+            Kind.CHOICE,
+            target=Target.EPISODE_CHOICE,
+            options=_options(ru.CHOICE_LABELS),
+            each="ep",
+            items=SOCIAL_AND_CHORES,
+            feature=HYPOTHESES_FEATURE,
+        ),
+        Question(
+            "preocc",
+            ru.Q_PREOCCUPATION,
+            Kind.CHOICE,
+            column="preoccupation",
+            options=_options(ru.PREOCCUPATION_LABELS),
+            feature=HYPOTHESES_FEATURE,
+        ),
+        Question(
+            "pnote",
+            ru.Q_PREOCCUPATION_NOTE,
+            Kind.TEXT,
+            column="preoccupation_note",
+            feature=HYPOTHESES_FEATURE,
+            when=("preocc", frozenset({"some", "strong"})),
         ),
         Question(
             "energy",
@@ -276,6 +366,16 @@ EVENING = Flow(
             Kind.CHOICE,
             column="pleasant_energy",
             options=_options(ru.ENERGY_LABELS),
+        ),
+        Question(
+            "press",
+            ru.Q_PRESSURE,
+            Kind.MULTI,
+            target=Target.PRESSURE,
+            options=_options(ru.PRESSURE_LABELS),
+            none_option="none",
+            every_days=2,
+            feature=HYPOTHESES_FEATURE,
         ),
         Question("more", ru.Q_MORE_DETAILS, Kind.GATE, options=YES_NO, opens="details"),
         _scale("phys", ru.Q_PHYSICAL, "physical_score", block="details"),

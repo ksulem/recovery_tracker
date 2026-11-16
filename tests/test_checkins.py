@@ -5,11 +5,21 @@ import time_machine
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from recovery.db.models import Checkin, CheckinSymptom, LoadEvent, RecoveryEvent, User
+from recovery.db.models import (
+    Checkin,
+    CheckinMark,
+    CheckinSymptom,
+    DayEpisode,
+    LoadEvent,
+    User,
+)
 from recovery.domain import CheckinStatus, CheckinType
 from recovery.texts import ru
 
 Factory = async_sessionmaker[AsyncSession]
+# The pressure question is asked every other day: pin dates explicitly.
+EVEN_DAY = datetime(2026, 11, 16, 18, 0, tzinfo=UTC)  # date(2026, 11, 16).toordinal() is even
+ODD_DAY = datetime(2026, 11, 17, 18, 0, tzinfo=UTC)
 
 
 async def _checkins(db: Factory, kind: str | None = None) -> list[Checkin]:
@@ -32,6 +42,11 @@ async def test_morning_checkin_saves_every_answer(make_client: Any, db: Factory)
     assert client.last_text() == ru.Q_SLEEP
 
     await client.click_button("Хорошо")
+    assert client.last_text() == ru.Q_SLEEP_ONSET
+    await client.click_button("Долго крутились мысли")
+    await client.click_button("Видео")
+    await client.click_button("Покупки")
+    await client.click_button(ru.BTN_DONE)
     await client.click_button("40%")
     await client.click_button("6")
     await client.click_button("Немного")
@@ -43,7 +58,10 @@ async def test_morning_checkin_saves_every_answer(make_client: Any, db: Factory)
     [c] = await _checkins(db)
     assert c.status == CheckinStatus.COMPLETED
     assert c.completed_at_utc is not None
-    assert c.battery_pct == 40
+    assert (c.battery_pct, c.sleep_onset) == (40, "thoughts")
+    async with db() as s:
+        marks = sorted((await s.scalars(select(CheckinMark.value))).all())
+    assert marks == ["shopping", "video"]
     assert (c.sleep_quality, c.physical_score, c.pleasant_desire, c.day_outlook) == (
         "good",
         6,
@@ -59,7 +77,7 @@ async def test_morning_checkin_saves_every_answer(make_client: Any, db: Factory)
 async def test_skipping_everything_leaves_nulls_not_zeros(make_client: Any, db: Factory) -> None:
     client = make_client()
     await client.send("/morning")
-    for _ in range(6):
+    for _ in range(8):
         await client.click_button(ru.BTN_SKIP)
     assert client.last_text() == ru.OUTRO_MORNING
 
@@ -68,6 +86,8 @@ async def test_skipping_everything_leaves_nulls_not_zeros(make_client: Any, db: 
     assert c.sleep_quality is None and c.physical_score is None and c.day_outlook is None
     assert c.question_status == {
         "sleep": "skipped",
+        "onset": "skipped",
+        "presleep": "skipped",
         "battery": "skipped",
         "phys": "skipped",
         "desire": "skipped",
@@ -90,58 +110,140 @@ async def test_finish_early_keeps_what_was_answered(make_client: Any, db: Factor
     assert await _count(db, LoadEvent) == 0
 
 
-async def test_evening_short_path_with_multi_select(make_client: Any, db: Factory) -> None:
+async def test_evening_with_day_episodes(make_client: Any, db: Factory) -> None:
     client = make_client()
-    await client.send("/evening")
-    await client.click_button("Хуже")
-    await client.click_button("30%")
-    await client.click_button("Работа")
-    await client.click_button("Общение")
-    await client.click_button("Работа")  # untoggle
-    await client.click_button("Переживания")
-    await client.click_button(ru.BTN_DONE)
-    await client.click_button("Хобби")
-    await client.click_button(ru.BTN_DONE)
-    await client.click_button("Не знаю")
-    assert client.last_text() == ru.Q_MORE_DETAILS
-    await client.click_button(ru.BTN_NO)
-    assert client.last_text() == ru.Q_TOMORROW  # detail block left out
-    await client.click_button(ru.BTN_SKIP)
-    assert client.last_text() == ru.Q_PARK  # closing of the day
-    await client.click_button(ru.BTN_NOTHING)
-    assert client.last_text() == ru.OUTRO_EVENING
+    with time_machine.travel(EVEN_DAY, tick=False):
+        await client.send("/evening")
+        await client.click_button("Хуже")
+        await client.click_button("30%")
+        assert client.last_text() == ru.Q_OBLIGATIONS
+        await client.click_button("Немного")
+        await client.click_button("Работа")
+        await client.click_button("Общение с близкими")
+        await client.click_button("Работа")  # untoggle
+        await client.click_button("Переживания")
+        await client.click_button(ru.BTN_DONE)
+        # One "how was it?" per episode, in the order they were picked.
+        assert client.last_text() == "Общение с близкими — как это было?"
+        await client.click_button("И то, и другое")
+        assert client.last_text().startswith("Общение с близкими: что дало?")
+        await client.click_button("Эмоционально")
+        await client.click_button(ru.BTN_DONE)
+        await client.click_button("Телу")
+        await client.click_button("Общение")
+        await client.click_button(ru.BTN_DONE)
+        assert client.last_text().startswith("Общение с близкими — по своему желанию")
+        await client.click_button("По желанию")
+        assert client.last_text() == "Переживания — как это было?"
+        await client.click_button("Забрало силы")
+        assert client.last_text() == ru.Q_PREOCCUPATION  # no "why" for worries
+        await client.click_button("Нет")
+        await client.click_button("Не знаю")
+        assert client.last_text().startswith(ru.Q_PRESSURE)  # even day
+        await client.click_button("Чувство вины за отдых")
+        await client.click_button(ru.BTN_DONE)
+        await client.click_button(ru.BTN_NO)
+        await client.click_button(ru.BTN_SKIP)
+        await client.click_button(ru.BTN_NOTHING)
+        assert client.last_text() == ru.OUTRO_EVENING
 
     async with db() as s:
-        categories = sorted((await s.scalars(select(LoadEvent.category))).all())
-        activities = (await s.scalars(select(RecoveryEvent.activity))).all()
-    assert categories == ["emotional", "social"]
-    assert activities == ["hobby"]
+        episodes = {e.kind: e for e in (await s.scalars(select(DayEpisode))).all()}
+        marks = (await s.scalars(select(CheckinMark.value))).all()
+    assert set(episodes) == {"close_people", "worries"}
+    close = episodes["close_people"]
+    assert (close.effect, close.gave, close.took, close.choice) == (
+        "both",
+        ["emotional"],
+        ["physical", "social"],
+        "wanted",
+    )
+    assert (episodes["worries"].effect, episodes["worries"].choice) == ("took", None)
+    assert marks == ["guilt_resting"]
     [c] = await _checkins(db)
-    assert c.pleasant_energy == "unknown"
-    assert c.physical_score is None and c.interest_score is None
-    assert c.question_status["more"] == "no"
+    assert (c.obligations, c.preoccupation, c.pleasant_energy) == ("some", "none", "unknown")
+    assert c.answers["ep"] == ["close_people", "worries"]
+    assert await _count(db, LoadEvent) == 0  # the old two lists are not used any more
+
+
+async def test_nothing_special_and_no_pressure(make_client: Any, db: Factory) -> None:
+    client = make_client()
+    with time_machine.travel(EVEN_DAY, tick=False):
+        await client.send("/evening")
+        await client.click_button(ru.BTN_SKIP)  # compared to morning
+        await client.click_button(ru.BTN_SKIP)  # battery
+        await client.click_button(ru.BTN_SKIP)  # obligations
+        await client.click_button("Ничего особенного")
+        await client.click_button(ru.BTN_DONE)
+        assert client.last_text() == ru.Q_PREOCCUPATION
+        await client.click_button("Да, сильно")
+        assert client.last_text() == ru.Q_PREOCCUPATION_NOTE
+        await client.send("Разговор с мамой")
+        assert ru.PIN_OFFER in client.texts()
+        await client.click_button(ru.BTN_SKIP)  # energy
+        await client.click_button("Ничего из этого")
+        await client.click_button(ru.BTN_DONE)
+        assert client.last_text() == ru.Q_MORE_DETAILS
+    [c] = await _checkins(db)
+    # "Ничего" is an answer, not a skip.
+    assert c.question_status["ep"] == "answered" and c.answers["ep"] == ["none"]
+    assert c.question_status["press"] == "answered" and c.answers["press"] == ["none"]
+    assert c.preoccupation_note == "Разговор с мамой"
+    assert await _count(db, DayEpisode) == 0 and await _count(db, CheckinMark) == 0
+
+
+async def test_pressure_is_asked_every_other_day(make_client: Any, db: Factory) -> None:
+    client = make_client()
+    with time_machine.travel(ODD_DAY, tick=False):
+        await client.send("/evening")
+        for _ in range(3):
+            await client.click_button(ru.BTN_SKIP)
+        await client.click_button(ru.BTN_DONE)  # no episodes
+        await client.click_button(ru.BTN_SKIP)  # preoccupation
+        await client.click_button(ru.BTN_SKIP)  # energy
+        assert client.last_text() == ru.Q_MORE_DETAILS  # no pressure question today
+
+
+async def test_note_on_mind_can_go_to_the_session(make_client: Any, db: Factory) -> None:
+    from recovery.db.models import DiscussionItem
+
+    client = make_client()
+    with time_machine.travel(ODD_DAY, tick=False):
+        await client.send("/evening")
+        for _ in range(3):
+            await client.click_button(ru.BTN_SKIP)
+        await client.click_button(ru.BTN_DONE)
+        await client.click_button("Немного")
+        await client.send("Отчёт для клиента")
+        offer = next(r for r in client.session.requests if getattr(r, "text", "") == ru.PIN_OFFER)
+        client.session.requests.append(offer)
+        await client.click_button(ru.BTN_THOUGHT_SESSION)
+    async with db() as s:
+        assert (await s.scalars(select(DiscussionItem.text))).all() == ["Отчёт для клиента"]
 
 
 async def test_evening_detail_block(make_client: Any, db: Factory) -> None:
     client = make_client()
-    await client.send("/evening")
-    await client.click_button(ru.BTN_SKIP)  # cmp
-    await client.click_button(ru.BTN_SKIP)  # battery
-    await client.click_button(ru.BTN_DONE)  # drains: nothing selected
-    await client.click_button(ru.BTN_SKIP)  # helped
-    await client.click_button(ru.BTN_SKIP)  # energy
-    await client.click_button(ru.BTN_YES)
-    for score in ("8", "2", "3", "4", "5"):
-        await client.click_button(score)
-    assert client.last_text().startswith(ru.Q_INTEREST)
-    await client.click_button("3 —")
-    await client.click_button("Раздражительность")
-    await client.click_button("слёзы")
-    await client.click_button(ru.BTN_DONE)
-    await client.send("Не планировать встречи")
-    assert client.last_text() == ru.Q_PARK
-    await client.click_button(ru.BTN_NOTHING)
-    assert client.last_text() == ru.OUTRO_EVENING
+    with time_machine.travel(ODD_DAY, tick=False):
+        await client.send("/evening")
+        await client.click_button(ru.BTN_SKIP)  # cmp
+        await client.click_button(ru.BTN_SKIP)  # battery
+        await client.click_button(ru.BTN_SKIP)  # obligations
+        await client.click_button(ru.BTN_DONE)  # episodes: nothing selected
+        await client.click_button(ru.BTN_SKIP)  # preoccupation
+        await client.click_button(ru.BTN_SKIP)  # energy
+        await client.click_button(ru.BTN_YES)
+        for score in ("8", "2", "3", "4", "5"):
+            await client.click_button(score)
+        assert client.last_text().startswith(ru.Q_INTEREST)
+        await client.click_button("3 —")
+        await client.click_button("Раздражительность")
+        await client.click_button("слёзы")
+        await client.click_button(ru.BTN_DONE)
+        await client.send("Не планировать встречи")
+        assert client.last_text() == ru.Q_PARK
+        await client.click_button(ru.BTN_NOTHING)
+        assert client.last_text() == ru.OUTRO_EVENING
 
     [c] = await _checkins(db)
     scores = (
@@ -153,7 +255,7 @@ async def test_evening_detail_block(make_client: Any, db: Factory) -> None:
     )
     assert scores == (8, 2, 3, 4, 5)  # stored separately, never averaged
     assert c.interest_score == 3
-    assert c.question_status["drain"] == "skipped"
+    assert c.question_status["ep"] == "skipped"
     assert c.tomorrow_note == "Не планировать встречи"
     async with db() as s:
         symptoms = sorted((await s.scalars(select(CheckinSymptom.symptom))).all())
@@ -168,11 +270,11 @@ async def test_check_in_survives_a_restart(make_client: Any, db: Factory) -> Non
     # New dispatcher, new storage instance: only Postgres carries the state.
     after = make_client()
     after.session.requests = list(before.session.requests)
-    await after.click_button("30%")  # the button sent before the restart still works
-    assert after.last_text() == ru.Q_PHYSICAL_NOW
+    await after.click_button("Легко")  # the button sent before the restart still works
+    assert after.last_text().startswith(ru.Q_PRE_SLEEP)
 
     [c] = await _checkins(db)
-    assert (c.sleep_quality, c.battery_pct) == ("poor", 30)
+    assert (c.sleep_quality, c.sleep_onset) == ("poor", "easy")
     assert c.status == CheckinStatus.IN_PROGRESS
 
 
@@ -183,7 +285,7 @@ async def test_resume_and_restart(make_client: Any, db: Factory) -> None:
     await client.send("/morning")
     assert client.last_text() == ru.RESUME_PROMPT.format(name="утренний")
     await client.click_button(ru.BTN_CONTINUE)
-    assert client.last_text() == ru.Q_BATTERY_MORNING  # picks up where it stopped
+    assert client.last_text() == ru.Q_SLEEP_ONSET  # picks up where it stopped
 
     await client.send("/morning")
     await client.click_button(ru.BTN_RESTART)

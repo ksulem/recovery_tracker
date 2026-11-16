@@ -62,3 +62,7 @@ class ThoughtCb(CallbackData, prefix="th"):
 
 class FeatureCb(CallbackData, prefix="ft"):
     f: str  # feature set name, or "back"
+
+
+class PinCb(CallbackData, prefix="pin"):
+    c: str  # check-in id, hex: add its "что занимает мысли" note to the session list

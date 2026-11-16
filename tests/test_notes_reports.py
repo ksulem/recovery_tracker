@@ -97,8 +97,8 @@ async def test_crisis_message_stops_the_flow(make_client: Any, db: Factory) -> N
     async with db() as s:
         c = await s.scalar(select(Checkin))
     assert c is not None and c.status == CheckinStatus.IN_PROGRESS and c.notes is None
-    await client.click_button("50%")  # the open question still works
-    assert client.last_text() == ru.Q_PHYSICAL_NOW
+    await client.click_button("Легко")  # the open question still works
+    assert client.last_text().startswith(ru.Q_PRE_SLEEP)
 
 
 async def test_crisis_number_is_configurable(make_client: Any) -> None:
@@ -110,6 +110,12 @@ async def test_crisis_number_is_configurable(make_client: Any) -> None:
 # --- /week ----------------------------------------------------------------------------
 async def test_week_export_reflects_exactly_the_records(make_client: Any, db: Factory) -> None:
     client = make_client()
+    with time_machine.travel(day(3, 6), tick=False):
+        await client.send("/ping")
+    async with db() as s, s.begin():
+        user = await s.scalar(select(User))
+        assert user is not None
+        user.disabled_features = ["hypotheses", "sleep"]
     with time_machine.travel(day(3, 7), tick=False):
         await client.send("/morning")
         await client.click_button("Хорошо")
@@ -123,8 +129,8 @@ async def test_week_export_reflects_exactly_the_records(make_client: Any, db: Fa
         await client.click_button("20%")
         await client.click_button("Работа")
         await client.click_button(ru.BTN_DONE)
-        await client.click_button(ru.BTN_SKIP)
-        await client.click_button(ru.BTN_SKIP)
+        await client.click_button("Забрало силы")
+        await client.click_button(ru.BTN_SKIP)  # energy
         await client.click_button(ru.BTN_YES)
         for score in ("8", "2", "3", "4", "5"):
             await client.click_button(score)
@@ -147,7 +153,7 @@ async def test_week_export_reflects_exactly_the_records(make_client: Any, db: Fa
     assert "- Заряд: 20%" in text
     assert "## Батарейка\n\n- Вт, 3 ноября 2026: утро 40%\n- Чт, 5 ноября 2026: вечер 20%" in text
     assert "резерва" not in text  # no reserve set → no reserve count
-    assert "Забирало силы: работа, умственные задачи" in text
+    assert "Эпизоды дня:\n  - работа, умственные задачи — забрало силы" in text
     # Each resource separately; no average anywhere.
     assert (
         "Ресурсы (0–10): физический 8 · эмоциональный 2 · социальный 3 · когнитивный 4 · "

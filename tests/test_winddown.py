@@ -51,6 +51,8 @@ async def _setup(client: Any, db: Factory, **fields: Any) -> User:
             "bedtime": time(23),
             "walk_time": time(18, 45),
             "onboarding_completed": True,
+            # These tests are about the wind-down: leave the optional sets out.
+            "disabled_features": ["hypotheses", "sleep"],
         } | fields
         for key, value in values.items():
             setattr(user, key, value)
@@ -266,8 +268,7 @@ async def _evening_to_closing(client: Any) -> None:
     await client.send("/evening")
     await client.click_button(ru.BTN_SKIP)  # compared to morning
     await client.click_button(ru.BTN_SKIP)  # battery
-    await client.click_button(ru.BTN_DONE)  # drains
-    await client.click_button(ru.BTN_DONE)  # helped
+    await client.click_button(ru.BTN_DONE)  # day episodes: none picked
     await client.click_button(ru.BTN_SKIP)  # energy
     await client.click_button(ru.BTN_NO)  # no details
     await client.click_button(ru.BTN_SKIP)  # tomorrow
