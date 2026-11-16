@@ -13,7 +13,16 @@ from datetime import date, timedelta
 
 from recovery.db.models import Checkin, DayEpisode
 from recovery.domain import CheckinType, MarkKind
-from recovery.reports.digest import Day, Digest, _ordered_episodes, pressure_label
+from recovery.reports.digest import (
+    Day,
+    Digest,
+    _label,
+    _labels,
+    _ordered_episodes,
+    episode_name,
+    onset_text,
+    pressure_label,
+)
 from recovery.texts import ru
 
 MIN_CASES = 3
@@ -83,10 +92,7 @@ def _evening_parts(p: Pair) -> list[str]:
     episodes = _ordered_episodes(c, p.day)
     if episodes:
         parts.append(
-            "эпизоды: "
-            + "; ".join(
-                f"{ru.EPISODE_LABELS[e.kind].lower()} — {_effect_short(e)}" for e in episodes
-            )
+            "эпизоды: " + "; ".join(f"{episode_name(e)} — {_effect_short(e)}" for e in episodes)
         )
     if c.preoccupation:
         parts.append(f"мысли занимает: {ru.PREOCCUPATION_LABELS[c.preoccupation].lower()}")
@@ -105,11 +111,12 @@ def _morning_parts(p: Pair) -> list[str]:
         return parts
     if m.sleep_quality:
         parts.append(f"после сна: {ru.SLEEP_LABELS[m.sleep_quality].lower()}")
-    if m.sleep_onset:
-        parts.append(f"заснуть: {ru.SLEEP_ONSET_LABELS[m.sleep_onset].lower()}")
+    onset = onset_text(m)
+    if onset:
+        parts.append(f"заснуть: {onset}")
     pre_sleep = _marks(p.next_day, m, MarkKind.PRE_SLEEP)
     if pre_sleep:
-        parts.append("перед сном: " + ", ".join(ru.PRE_SLEEP_LABELS[v].lower() for v in pre_sleep))
+        parts.append(f"перед сном: {_labels(pre_sleep, ru.PRE_SLEEP_LABELS, m.pre_sleep_note)}")
     if m.battery_pct is not None:
         parts.append(f"заряд {m.battery_pct}%")
     if m.physical_score is not None:
@@ -173,7 +180,7 @@ def _effects(episodes: list[DayEpisode]) -> str:
 
 def _resources(episodes: list[DayEpisode], attr: str) -> str:
     counts = Counter(r for e in episodes for r in getattr(e, attr))
-    return ", ".join(f"{ru.RESOURCE_LABELS[r].lower()} {n}" for r, n in counts.most_common())
+    return ", ".join(f"{_label(r, ru.RESOURCE_LABELS)} {n}" for r, n in counts.most_common())
 
 
 def episodes_section(digest: Digest) -> str | None:
@@ -185,7 +192,8 @@ def episodes_section(digest: Digest) -> str | None:
         by_kind[e.kind].append(e)
     lines = []
     for kind, group in sorted(by_kind.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-        line = f"- {ru.EPISODE_LABELS[kind].lower()} — {len(group)}: {_effects(group)}"
+        name = ru.OTHER_SHORT if kind == "other" else ru.EPISODE_LABELS[kind].lower()
+        line = f"- {name} — {len(group)}: {_effects(group)}"
         both = [e for e in group if e.effect == "both"]
         if both:
             gave, took = _resources(both, "gave"), _resources(both, "took")

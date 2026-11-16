@@ -196,6 +196,7 @@ class EpisodeKind(StrEnum):
     WORRIES = "worries"
     DECISIONS = "decisions"
     SELF_DEMANDS = "self_demands"  # требования к себе
+    OTHER = "other"  # своими словами (day_episodes.note)
 
 
 class EpisodeEffect(StrEnum):
@@ -212,6 +213,7 @@ class Resource(StrEnum):
     PHYSICAL = "physical"
     SOCIAL = "social"
     COGNITIVE = "cognitive"
+    OTHER = "other"  # своими словами (day_episodes.gave_note / took_note)
 
 
 class EpisodeChoice(StrEnum):
@@ -248,6 +250,7 @@ class PreSleepActivity(StrEnum):
     VIDEO = "video"
     SHOPPING = "shopping"  # покупки или каталоги
     SOCIAL_MEDIA = "social_media"
+    OTHER = "other"  # своими словами (checkins.pre_sleep_note)
 
 
 class MarkKind(StrEnum):

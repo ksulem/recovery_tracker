@@ -238,6 +238,10 @@ class Checkin(LocalTimeMixin, Base):
     preoccupation: Mapped[str | None] = mapped_column(Text)
     preoccupation_note: Mapped[str | None] = mapped_column(Text)
     pressure_note: Mapped[str | None] = mapped_column(Text)  # "другое" in the pressure question
+    # "Другое" in the other lists, in the owner's own words.
+    pre_sleep_note: Mapped[str | None] = mapped_column(Text)
+    signs_note: Mapped[str | None] = mapped_column(Text)
+    sleep_onset_note: Mapped[str | None] = mapped_column(Text)
     sleep_onset: Mapped[str | None] = mapped_column(Text)
     # NULL = the regular flow; 'short' = the late-evening version.
     flow_variant: Mapped[str | None] = mapped_column(Text)
@@ -303,6 +307,10 @@ class DayEpisode(LocalTimeMixin, Base):
         ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
     )
     choice: Mapped[str | None] = mapped_column(Text)
+    # Own words for "Другое": the episode itself, and what else it gave / took.
+    note: Mapped[str | None] = mapped_column(Text)
+    gave_note: Mapped[str | None] = mapped_column(Text)
+    took_note: Mapped[str | None] = mapped_column(Text)
     source: Mapped[str] = mapped_column(Text, nullable=False, default=Source.BUTTON)
 
 

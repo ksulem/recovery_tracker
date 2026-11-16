@@ -105,6 +105,12 @@ Answers are buttons. Every question has **Пропустить** (skip) and **З
 unfinished check-in the same day, the bot offers **Продолжить / Начать заново /
 Не сейчас** (continue / start over / not now).
 
+Every list of options also has **Другое — опишу своими словами**. Picking it
+brings one short follow-up («Что именно?»), and the answer appears in the
+reports as «другое: «…»». This covers the day's episodes, what an episode
+gave or took, what happened before sleep, signs of overload, pressure on
+oneself and «трудно по другой причине» when falling asleep.
+
 Questions marked 🧩 belong to optional sets that can be switched off in
 `/settings → 🧩 Дополнительные вопросы`: **Как получилось заснуть** (morning)
 and **Вопросы для проверки гипотез** (evening).
