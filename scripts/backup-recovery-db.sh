@@ -14,13 +14,25 @@
 # key (age1...); keep the private key off this VM (e.g. in your password
 # manager), so a compromised VM can't read old backups.
 #
-# RESTORE:
-#   age -d -i key.txt recovery-<stamp>.dump.age > recovery.dump
-#   docker exec -i plant-monitor-timescaledb-1 createdb -U recovery_app -T template0 recovery_restore
-#   docker exec -i plant-monitor-timescaledb-1 pg_restore -U recovery_app -d recovery_restore --no-owner < recovery.dump
+# CONTAINER is the Postgres container: recovery-db-1 with the default
+# docker-compose.yml, plant-monitor-timescaledb-1 (the default here) with
+# docker-compose.shared.yml.
 #
-# Cron example (03:17 every night):
-#   17 3 * * * AGE_RECIPIENT=age1... /opt/recovery/scripts/backup-recovery-db.sh >> /var/log/recovery-backup.log 2>&1
+# RESTORE into a scratch database, then compare it before swapping anything.
+# Decrypt on a machine that has the private key and stream the dump, so the
+# plaintext is never written to disk:
+#   oci os object get --bucket-name <bucket> --name recovery/recovery-<stamp>.dump.age --file backup.age
+#   docker exec <CONTAINER> createdb -U recovery_app -T template0 recovery_restore
+#   age -d -i key.txt backup.age | ssh <server> \
+#     docker exec -i <CONTAINER> pg_restore -U recovery_app -d recovery_restore --no-owner --no-acl --exit-on-error
+#
+# Cron example (03:17 every night, logged to the journal):
+#   # /etc/cron.d/recovery-backup
+#   17 3 * * * <user> CONTAINER=recovery-db-1 AGE_RECIPIENT=age1... BUCKET=<bucket> OCI=/usr/bin/oci /path/to/scripts/backup-recovery-db.sh 2>&1 | logger -t recovery-backup
+#
+# Off-site bucket: give the VM's dynamic group only OBJECT_CREATE, OBJECT_READ
+# and OBJECT_INSPECT on it (no delete/overwrite), so a compromised VM can't
+# wipe the backups; expire old dumps with a lifecycle rule on the bucket.
 set -euo pipefail
 
 CONTAINER=${CONTAINER:-plant-monitor-timescaledb-1}
