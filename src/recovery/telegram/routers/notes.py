@@ -13,12 +13,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery
 from aiogram.types import Message as TgMessage
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from recovery import discussion, thoughts, winddown
 from recovery.clock import utcnow
-from recovery.db.models import DiscussionItem, Message, User
-from recovery.domain import DiscussionStatus, InputType
+from recovery.db.models import DiscussionItem, Message, ParkedThought, User
+from recovery.domain import InputType
 from recovery.reports.digest import open_discussion_items
 from recovery.telegram.callbacks import NoteCb, StartCb
 from recovery.telegram.keyboards import build
@@ -46,36 +47,48 @@ async def save_note(session: AsyncSession, user: User, message: TgMessage) -> Me
 async def add_item(
     session: AsyncSession, user: User, text: str, message_id: uuid.UUID | None = None
 ) -> int:
-    session.add(
-        DiscussionItem(
-            user_id=user.id,
-            text=text.strip(),
-            message_id=message_id,
-            status=DiscussionStatus.OPEN,
-            tz_name=user.timezone,
-            created_at_utc=utcnow(),
-        )
-    )
-    await session.flush()
-    count = await session.scalar(
-        select(func.count())
-        .select_from(DiscussionItem)
-        .where(DiscussionItem.user_id == user.id, DiscussionItem.status == DiscussionStatus.OPEN)
-    )
-    return int(count or 0)
+    """Add to the session list; returns how many items are open now."""
+    await discussion.add_item(session, user, text, message_id)
+    return await discussion.count_open(session, user)
 
 
 async def on_free_text(message: TgMessage, session: AsyncSession, user: User) -> None:
+    if winddown.is_late(user):
+        # Late mode: park it, one line back, nothing to tap — the bot must not
+        # become one more reason to stay on the phone.
+        await thoughts.park(session, user, message.text or "")
+        await message.answer(ru.LATE_PARKED)
+        return
     note = await save_note(session, user, message)
     keyboard = build(
         [
             [
                 (ru.BTN_TO_SESSION, NoteCb(op="disc", m=note.id.hex).pack()),
-                (ru.BTN_MARK_STATE, StartCb(kind="ad_hoc", op="go").pack()),
-            ]
+                (ru.BTN_PARK, NoteCb(op="park", m=note.id.hex).pack()),
+            ],
+            [(ru.BTN_MARK_STATE, StartCb(kind="ad_hoc", op="go").pack())],
         ]
     )
     await message.answer(ru.NOTE_SAVED, reply_markup=keyboard)
+
+
+async def on_note_to_later(
+    cb: CallbackQuery, callback_data: NoteCb, session: AsyncSession, user: User
+) -> None:
+    note = await session.get(Message, uuid.UUID(hex=callback_data.m))
+    if note is None or note.user_id != user.id or not note.text:
+        await cb.answer(ru.STALE_QUESTION)
+        return
+    exists = await session.scalar(
+        select(ParkedThought.id).where(ParkedThought.message_id == note.id)
+    )
+    if exists:
+        await cb.answer(ru.PARK_ALREADY)
+        return
+    await thoughts.park(session, user, note.text, note.id)
+    await cb.answer(ru.PARKED_SHORT)
+    if cb.message is not None:
+        await cb.message.answer(ru.PARKED)
 
 
 async def on_note_to_session(
@@ -140,6 +153,7 @@ def make_router() -> Router:
     router.message.register(cmd_discuss, Command("discuss"))
     router.message.register(cmd_cancel, Command("cancel"))
     router.callback_query.register(on_note_to_session, NoteCb.filter(F.op == "disc"))
+    router.callback_query.register(on_note_to_later, NoteCb.filter(F.op == "park"))
     router.message.register(on_discuss_text, DiscussStates.waiting, F.text, ~F.text.startswith("/"))
     router.message.register(on_unknown_command, F.text.startswith("/"))
     router.message.register(on_free_text, F.text)

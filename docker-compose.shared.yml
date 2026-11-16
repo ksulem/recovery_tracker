@@ -23,6 +23,7 @@ x-db-url: &db-url postgresql+asyncpg://recovery_app:${RECOVERY_DB_PASSWORD:?RECO
 services:
   migrate:
     build: .
+    image: ${RECOVERY_IMAGE:-recovery:local}
     command: ["alembic", "upgrade", "head"]
     logging: *default-logging
     environment:
@@ -32,6 +33,7 @@ services:
 
   bot:
     build: .
+    image: ${RECOVERY_IMAGE:-recovery:local}
     logging: *default-logging
     environment:
       RECOVERY_BOT_TOKEN: ${RECOVERY_BOT_TOKEN:?RECOVERY_BOT_TOKEN is required}

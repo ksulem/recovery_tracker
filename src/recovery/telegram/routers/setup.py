@@ -13,8 +13,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
+from recovery import battery, winddown
+from recovery.conversation.flows import FEATURE_SETS
 from recovery.db.models import User
-from recovery.telegram.callbacks import SettingsCb, SetupCb, encode_time
+from recovery.domain import BatteryColor
+from recovery.telegram.callbacks import BatteryCb, FeatureCb, SettingsCb, SetupCb, encode_time
 from recovery.telegram.hooks import SettingsChanged
 from recovery.telegram.keyboards import build, chunk
 from recovery.texts import ru
@@ -34,6 +37,9 @@ TIMEZONES = [
 MORNING_TIMES = ["07:30", "08:00", "08:30", "09:00", "09:30", "10:00"]
 EVENING_TIMES = ["20:00", "20:30", "21:00", "21:30", "22:00", "22:30"]
 SESSION_TIMES = ["09:00", "10:00", "11:00", "12:00", "15:00", "17:00", "18:00", "19:00"]
+BED_TIMES = ["22:00", "22:30", "23:00", "23:30", "00:00", "00:30"]
+WALK_TIMES = ["18:00", "18:30", "18:45", "19:00", "19:30", "20:00"]
+OPTIONAL_TIMES = {"bed", "walk"}  # can be cleared ("Не задавать")
 QUIET_PRESETS = [("22:00–08:00", "2200-0800"), ("23:00–09:00", "2300-0900")]
 
 
@@ -74,7 +80,28 @@ def summary(user: User) -> str:
     lines.append(
         ru.SUMMARY_TRANSCRIPTS_ON if user.store_transcripts else ru.SUMMARY_TRANSCRIPTS_OFF
     )
+    lines.append(
+        ru.SUMMARY_BATTERY_ON.format(reserve=_reserve_text(user))
+        if user.battery_enabled
+        else ru.SUMMARY_BATTERY_OFF
+    )
+    start = winddown.boundary(user)
+    lines.append(
+        ru.SUMMARY_BEDTIME.format(bedtime=fmt(user.bedtime), start=fmt(start))
+        if user.bedtime is not None
+        else ru.SUMMARY_NO_BEDTIME
+    )
+    lines.append(
+        ru.SUMMARY_WALK.format(time=fmt(user.walk_time))
+        if user.walk_time is not None
+        else ru.SUMMARY_NO_WALK
+    )
     return "\n".join(lines)
+
+
+def _reserve_text(user: User) -> str:
+    reserve = user.battery_reserve_pct
+    return f"{reserve}%" if reserve is not None else ru.BATTERY_NO_RESERVE
 
 
 def settings_keyboard(user: User) -> InlineKeyboardMarkup:
@@ -86,6 +113,9 @@ def settings_keyboard(user: User) -> InlineKeyboardMarkup:
             [(ru.BTN_SET_TIMEZONE, item("tz"))],
             [(ru.BTN_SET_MORNING, item("morning")), (ru.BTN_SET_EVENING, item("evening"))],
             [(ru.BTN_SET_SESSION, item("session")), (ru.BTN_SET_QUIET, item("quiet"))],
+            [(ru.BTN_SET_BEDTIME, item("bed")), (ru.BTN_SET_WALK, item("walk"))],
+            [(ru.BTN_SET_BATTERY, item("battery"))],
+            *([[(ru.BTN_SET_EXTRA, item("extra"))]] if FEATURE_SETS else []),
             [
                 (
                     ru.BTN_REMINDERS_ON if user.reminders_enabled else ru.BTN_REMINDERS_OFF,
@@ -106,6 +136,8 @@ def _time_keyboard(field: str, options: list[str]) -> InlineKeyboardMarkup:
     buttons = [(t, SetupCb(field=field, v=encode_time(t)).pack()) for t in options]
     rows = chunk(buttons, 3)
     rows.append([(ru.BTN_OTHER, SetupCb(field=field, v="other").pack())])
+    if field in OPTIONAL_TIMES:
+        rows.append([(ru.BTN_NOT_SET, SetupCb(field=field, v="none").pack())])
     return build(rows)
 
 
@@ -122,6 +154,8 @@ async def ask_time(bot: Bot, user: User, field: str) -> None:
         "morning": (ru.ASK_MORNING_TIME, MORNING_TIMES),
         "evening": (ru.ASK_EVENING_TIME, EVENING_TIMES),
         "stime": (ru.ASK_SESSION_TIME, SESSION_TIMES),
+        "bed": (ru.ASK_BEDTIME, BED_TIMES),
+        "walk": (ru.ASK_WALK_TIME, WALK_TIMES),
     }
     text, options = prompts[field]
     await bot.send_message(user.telegram_id, text, reply_markup=_time_keyboard(field, options))
@@ -178,7 +212,32 @@ async def after_step(
         await ask_time(bot, user, "stime")
         return
     await settings_changed(user)
+    if field in ("evening", "bed") and winddown.evening_too_late(user):
+        await warn_evening_too_late(bot, user)
+        return
     await show_settings(bot, user, ru.SETTINGS_SAVED)
+
+
+async def warn_evening_too_late(bot: Bot, user: User) -> None:
+    """The day review should end at least an hour before sleep: offer — not
+    force — an earlier evening check-in."""
+    suggested = winddown.suggested_evening_time(user)
+    assert suggested is not None
+    await bot.send_message(
+        user.telegram_id,
+        ru.EVENING_TOO_LATE.format(evening=fmt(user.evening_time), suggested=fmt(suggested)),
+        reply_markup=build(
+            [
+                [
+                    (
+                        ru.BTN_MOVE_TO.format(time=fmt(suggested)),
+                        SetupCb(field="evening", v=encode_time(fmt(suggested))).pack(),
+                    )
+                ],
+                [(ru.BTN_LEAVE_AS_IS, SetupCb(field="keep", v="-").pack())],
+            ]
+        ),
+    )
 
 
 # --- handlers -----------------------------------------------------------------------
@@ -224,12 +283,24 @@ async def on_settings_item(
                 reply_markup=settings_keyboard(user),
             )
         return
+    if item == "battery":
+        await bot.send_message(
+            user.telegram_id, battery_settings_text(user), reply_markup=battery_keyboard(user)
+        )
+        return
+    if item == "extra":
+        await bot.send_message(
+            user.telegram_id, extra_questions_text(), reply_markup=extra_questions_keyboard(user)
+        )
+        return
     prompts = {
         "tz": lambda: ask_timezone(bot, user),
         "morning": lambda: ask_time(bot, user, "morning"),
         "evening": lambda: ask_time(bot, user, "evening"),
         "session": lambda: ask_session_day(bot, user),
         "quiet": lambda: ask_quiet_hours(bot, user),
+        "bed": lambda: ask_time(bot, user, "bed"),
+        "walk": lambda: ask_time(bot, user, "walk"),
     }
     await prompts[item]()
 
@@ -260,13 +331,19 @@ async def on_setup_choice(
             await bot.send_message(user.telegram_id, ru.ASK_TIME_TEXT)
         return
 
+    if field == "keep":
+        await state.set_state(None)
+        await show_settings(bot, user, ru.SETTINGS_SAVED)
+        return
     if field == "tz":
         zone = parse_timezone(value)
         if zone is None:
             await bot.send_message(user.telegram_id, ru.TIMEZONE_BAD)
             return
         user.timezone = zone
-    elif field in ("morning", "evening", "stime"):
+    elif field in OPTIONAL_TIMES and value == "none":
+        _set_time(user, field, None)
+    elif field in ("morning", "evening", "stime", *OPTIONAL_TIMES):
         parsed = parse_time(f"{value[:2]}:{value[2:]}")
         if parsed is None:
             await bot.send_message(user.telegram_id, ru.TIME_BAD)
@@ -289,13 +366,17 @@ async def on_setup_choice(
     await after_step(field, bot, user, state, settings_changed)
 
 
-def _set_time(user: User, field: str, value: time) -> None:
-    if field == "morning":
+def _set_time(user: User, field: str, value: time | None) -> None:
+    if field == "morning" and value is not None:
         user.morning_time = value
-    elif field == "evening":
+    elif field == "evening" and value is not None:
         user.evening_time = value
     elif field == "stime":
         user.session_time = value
+    elif field == "bed":
+        user.bedtime = value
+    elif field == "walk":
+        user.walk_time = value
 
 
 async def on_timezone_text(
@@ -332,12 +413,126 @@ async def on_quiet_text(
     await after_step("quiet", bot, user, state, settings_changed)
 
 
+# --- battery exercise settings ---------------------------------------------------------
+def battery_settings_text(user: User) -> str:
+    example_pct = 60
+    return ru.BATTERY_SETTINGS.format(
+        state=ru.BATTERY_ON if user.battery_enabled else ru.BATTERY_OFF,
+        reserve=_reserve_text(user),
+        color=f"{battery.SQUARES[BatteryColor(user.battery_color)]} "
+        f"{ru.COLOR_LABELS[user.battery_color]}",
+        example=battery.bar(example_pct, user.battery_color, user.battery_reserve_pct),
+    )
+
+
+def battery_keyboard(user: User) -> InlineKeyboardMarkup:
+    return build(
+        [
+            [
+                (
+                    ru.BTN_BATTERY_ON if user.battery_enabled else ru.BTN_BATTERY_OFF,
+                    BatteryCb(op="toggle").pack(),
+                )
+            ],
+            [
+                (ru.BTN_BATTERY_RESERVE, BatteryCb(op="reserve").pack()),
+                (ru.BTN_BATTERY_COLOR, BatteryCb(op="color").pack()),
+            ],
+            [(ru.BTN_BACK, BatteryCb(op="back").pack())],
+        ]
+    )
+
+
+def _reserve_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        (f"{pct}%", BatteryCb(op="setreserve", v=str(pct)).pack())
+        for pct in battery.RESERVE_OPTIONS
+    ]
+    rows = chunk(buttons, 5)
+    rows.append([(ru.BTN_NO_RESERVE, BatteryCb(op="setreserve", v="none").pack())])
+    return build(rows)
+
+
+def _color_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        (f"{square} {ru.COLOR_LABELS[color]}", BatteryCb(op="setcolor", v=color).pack())
+        for color, square in battery.SQUARES.items()
+    ]
+    return build(chunk(buttons, 2))
+
+
+async def on_battery_settings(
+    cb: CallbackQuery, callback_data: BatteryCb, bot: Bot, user: User
+) -> None:
+    await cb.answer()
+    op, value = callback_data.op, callback_data.v
+    if op == "back":
+        await show_settings(bot, user)
+        return
+    if op in ("reserve", "color"):
+        text, keyboard = (
+            (ru.ASK_BATTERY_RESERVE, _reserve_keyboard())
+            if op == "reserve"
+            else (ru.ASK_BATTERY_COLOR, _color_keyboard())
+        )
+        if cb.message is not None:
+            await cb.message.edit_text(text, reply_markup=keyboard)  # type: ignore[union-attr]
+        return
+    if op == "toggle":
+        user.battery_enabled = not user.battery_enabled
+    elif op == "setreserve":
+        user.battery_reserve_pct = None if value == "none" else int(value)
+    elif op == "setcolor" and value in {c.value for c in BatteryColor}:
+        user.battery_color = value
+    if cb.message is not None:
+        await cb.message.edit_text(  # type: ignore[union-attr]
+            battery_settings_text(user), reply_markup=battery_keyboard(user)
+        )
+
+
+# --- optional question sets ------------------------------------------------------------
+def extra_questions_text() -> str:
+    lines = [ru.EXTRA_QUESTIONS_TITLE, ""]
+    lines += [f"<b>{label}</b> — {description}" for label, description in FEATURE_SETS.values()]
+    return "\n".join(lines)
+
+
+def extra_questions_keyboard(user: User) -> InlineKeyboardMarkup:
+    off = set(user.disabled_features or ())
+    rows = [
+        [(f"{'⬜' if name in off else '✅'} {label}", FeatureCb(f=name).pack())]
+        for name, (label, _) in FEATURE_SETS.items()
+    ]
+    rows.append([(ru.BTN_BACK, FeatureCb(f="back").pack())])
+    return build(rows)
+
+
+async def on_feature_toggle(
+    cb: CallbackQuery, callback_data: FeatureCb, bot: Bot, user: User
+) -> None:
+    await cb.answer()
+    if callback_data.f == "back":
+        await show_settings(bot, user)
+        return
+    if callback_data.f not in FEATURE_SETS:
+        return
+    off = set(user.disabled_features or ())
+    off ^= {callback_data.f}
+    user.disabled_features = sorted(off)  # reassign so the ARRAY change is saved
+    if cb.message is not None:
+        await cb.message.edit_reply_markup(  # type: ignore[union-attr]
+            reply_markup=extra_questions_keyboard(user)
+        )
+
+
 def make_router() -> Router:
     router = Router(name="setup")
     router.message.register(cmd_start, CommandStart())
     router.message.register(cmd_help, Command("help"))
     router.message.register(cmd_settings, Command("settings"))
     router.callback_query.register(on_settings_item, SettingsCb.filter())
+    router.callback_query.register(on_battery_settings, BatteryCb.filter())
+    router.callback_query.register(on_feature_toggle, FeatureCb.filter())
     router.callback_query.register(on_setup_choice, SetupCb.filter())
     not_command = ~F.text.startswith("/")
     router.message.register(on_timezone_text, SetupStates.timezone, F.text, not_command)

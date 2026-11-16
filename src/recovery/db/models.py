@@ -24,6 +24,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     SmallInteger,
@@ -33,12 +34,14 @@ from sqlalchemy import (
     Uuid,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import text as sql_text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from recovery.clock import utcnow
 from recovery.db.base import Base
 from recovery.domain import (
+    BatteryColor,
     CheckinStatus,
     CheckinType,
     Comparison,
@@ -47,19 +50,31 @@ from recovery.domain import (
     DayOutlook,
     DiscussionStatus,
     Effect,
+    EpisodeChoice,
+    EpisodeEffect,
+    EpisodeKind,
+    FlowVariant,
     InputType,
     Intensity,
     LoadCategory,
+    MarkKind,
+    Obligations,
     PartOfDay,
     PleasantDesire,
     PleasantEnergy,
+    Preoccupation,
+    PreSleepActivity,
+    PressureSignal,
     PromptKind,
     PromptStatus,
     RecoveryActivity,
+    Resource,
     SafetySource,
+    SleepOnset,
     SleepQuality,
     Source,
     Symptom,
+    ThoughtStatus,
 )
 
 
@@ -111,6 +126,8 @@ class User(Base):
     __table_args__ = (
         between("session_weekday", 0, 6),
         between("session_brief_lead_hours", 0, 48),
+        between("battery_reserve_pct", 0, 100),
+        one_of("battery_color", BatteryColor),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -135,6 +152,23 @@ class User(Base):
     onboarding_completed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # "Battery" exercise: a subjective charge (%) the owner estimates herself —
+    # the bot never computes one. The reserve is a line she chooses not to go below.
+    battery_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    battery_reserve_pct: Mapped[int | None] = mapped_column(SmallInteger)
+    battery_color: Mapped[str] = mapped_column(
+        Text, nullable=False, default=BatteryColor.GREEN, server_default=text("'green'")
+    )
+    # Evening wind-down: an hour before bedtime the bot goes quiet and parks any
+    # thought for later. Both optional: without them that behaviour is off.
+    bedtime: Mapped[time | None] = mapped_column(Time)
+    walk_time: Mapped[time | None] = mapped_column(Time)
+    # Optional question sets the owner switched off (see flows.FEATURE_SETS).
+    disabled_features: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
+    )
     created_at_utc: Mapped[datetime] = utc_column(default=True)
 
 
@@ -149,11 +183,17 @@ class Checkin(LocalTimeMixin, Base):
         between("cognitive_score", 0, 10),
         between("overall_score", 0, 10),
         between("interest_score", 0, 5),
+        between("battery_pct", 0, 100),
+        between("battery_reserve_pct", 0, 100),
         one_of("sleep_quality", SleepQuality),
         one_of("comparison_to_morning", Comparison),
         one_of("day_outlook", DayOutlook),
         one_of("pleasant_desire", PleasantDesire),
         one_of("pleasant_energy", PleasantEnergy),
+        one_of("flow_variant", FlowVariant),
+        one_of("obligations", Obligations),
+        one_of("preoccupation", Preoccupation),
+        one_of("sleep_onset", SleepOnset),
         # At most one live morning and one live evening check-in per local day;
         # "start over" abandons the old one. Ad-hoc check-ins are unlimited.
         Index(
@@ -179,6 +219,11 @@ class Checkin(LocalTimeMixin, Base):
     cognitive_score: Mapped[int | None] = mapped_column(SmallInteger)
     overall_score: Mapped[int | None] = mapped_column(SmallInteger)
     interest_score: Mapped[int | None] = mapped_column(SmallInteger)
+    # Self-estimated battery charge, 0–100 in steps of 10, and the reserve that
+    # was set at that moment (a snapshot, like tz_name: later changes to the
+    # reserve don't rewrite history).
+    battery_pct: Mapped[int | None] = mapped_column(SmallInteger)
+    battery_reserve_pct: Mapped[int | None] = mapped_column(SmallInteger)
 
     sleep_quality: Mapped[str | None] = mapped_column(Text)
     comparison_to_morning: Mapped[str | None] = mapped_column(Text)
@@ -188,10 +233,25 @@ class Checkin(LocalTimeMixin, Base):
     expected_heavy_load: Mapped[str | None] = mapped_column(Text)
     tomorrow_note: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
+    # Week-2 hypothesis questions (evening) and sleep questions (morning).
+    obligations: Mapped[str | None] = mapped_column(Text)
+    preoccupation: Mapped[str | None] = mapped_column(Text)
+    preoccupation_note: Mapped[str | None] = mapped_column(Text)
+    sleep_onset: Mapped[str | None] = mapped_column(Text)
+    # NULL = the regular flow; 'short' = the late-evening version.
+    flow_variant: Mapped[str | None] = mapped_column(Text)
+    # Bedtime at the time of the check-in (snapshot), to report when the day
+    # review happened relative to sleep even if the setting changes later.
+    bedtime: Mapped[time | None] = mapped_column(Time)
 
     # question id -> "answered" | "skipped". Distinguishes "skipped" from
     # "never asked" (both leave the value NULL) and drives resume.
     question_status: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    # question id -> raw choice answer (value or list of values). Drives
+    # conditional and per-item questions; free text is not copied here.
+    answers: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
 
@@ -205,6 +265,68 @@ class CheckinSymptom(Base):
     )
     symptom: Mapped[str] = mapped_column(Text, primary_key=True)
     source: Mapped[str] = mapped_column(Text, nullable=False, default=Source.BUTTON)
+
+
+def _subset_of(column: str, enum: type[StrEnum]) -> CheckConstraint:
+    values = ", ".join(f"'{member.value}'" for member in enum)
+    return CheckConstraint(f"{column} <@ ARRAY[{values}]::text[]", name=f"{column}_valid")
+
+
+class DayEpisode(LocalTimeMixin, Base):
+    """Something notable in the day and what it did: gave, took, both or
+    neither — and, for "both", which resources it gave and which it took."""
+
+    __tablename__ = "day_episodes"
+    __table_args__ = (
+        one_of("kind", EpisodeKind),
+        one_of("effect", EpisodeEffect),
+        one_of("choice", EpisodeChoice),
+        one_of("source", Source),
+        _subset_of("gave", Resource),
+        _subset_of("took", Resource),
+        UniqueConstraint("checkin_id", "kind", name="uq_day_episodes_checkin_kind"),
+        Index("ix_day_episodes_user_date", "user_id", "local_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = user_fk()
+    checkin_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("checkins.id", ondelete="CASCADE")
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    effect: Mapped[str | None] = mapped_column(Text)  # NULL: not rated (cap or skipped)
+    gave: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
+    )
+    took: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
+    )
+    choice: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(Text, nullable=False, default=Source.BUTTON)
+
+
+class CheckinMark(Base):
+    """Multi-select answers from small closed lists: pressure on oneself
+    (evening) and what happened before sleep (morning)."""
+
+    __tablename__ = "checkin_marks"
+    __table_args__ = (
+        one_of("kind", MarkKind),
+        CheckConstraint(
+            "(kind = 'pressure' AND value IN ("
+            + ", ".join(f"'{v.value}'" for v in PressureSignal)
+            + ")) OR (kind = 'pre_sleep' AND value IN ("
+            + ", ".join(f"'{v.value}'" for v in PreSleepActivity)
+            + "))",
+            name="value_valid",
+        ),
+    )
+
+    checkin_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("checkins.id", ondelete="CASCADE"), primary_key=True
+    )
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, primary_key=True)
 
 
 class Message(LocalTimeMixin, Base):
@@ -357,6 +479,43 @@ class DiscussionItem(LocalTimeMixin, Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, default=DiscussionStatus.OPEN)
     session_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("therapy_sessions.id", ondelete="SET NULL")
+    )
+    resolved_at_utc: Mapped[datetime | None] = utc_column(nullable=True)
+
+
+class ParkedThought(LocalTimeMixin, Base):
+    """A thought written down to be dealt with later ("на потом").
+
+    Note: the ``text`` column shadows ``sqlalchemy.text`` inside this class body,
+    hence ``sql_text`` for server defaults.
+    """
+
+    __tablename__ = "parked_thoughts"
+    __table_args__ = (
+        one_of("status", ThoughtStatus),
+        Index("ix_parked_thoughts_user_status", "user_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    # Insertion order: several thoughts parked from one message share a
+    # timestamp, but must keep the order they were written in.
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), nullable=False)
+    user_id: Mapped[uuid.UUID] = user_fk()
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("messages.id", ondelete="SET NULL")
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default=ThoughtStatus.OPEN)
+    # Local date it was last taken on the evening walk (one thought per day).
+    taken_on: Mapped[date | None] = mapped_column(Date)
+    postponed_count: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default=sql_text("0")
+    )
+    session_suggested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sql_text("false")
+    )
+    discussion_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("discussion_items.id", ondelete="SET NULL")
     )
     resolved_at_utc: Mapped[datetime | None] = utc_column(nullable=True)
 

@@ -38,6 +38,9 @@ class Settings(BaseSettings):
 
     # Scheduler
     reminder_delay_minutes: int = 120
+    # Evening reminder comes sooner, so it lands before the wind-down boundary
+    # (evening check-in 20:45 → reminder 21:30, boundary 22:00).
+    evening_reminder_delay_minutes: int = 45
     catchup_window_minutes: int = 120
 
     @field_validator("default_timezone")

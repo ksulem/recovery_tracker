@@ -1,13 +1,26 @@
 name: CI
 
+# Runs on pushes to dev and on pull requests. Pushes to main run it through
+# the CD workflow (deploy.yml calls this file), so a release is never deployed
+# without passing it.
 on:
   push:
-    branches: [main, dev]
+    branches: [dev]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
 
 jobs:
   test:
+    name: Lint, types, migrations, tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -23,16 +36,52 @@ jobs:
       TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/recovery_test
     steps:
       - uses: actions/checkout@v4
+
       - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            requirements.lock
+            pyproject.toml
+
       - name: Install
         run: |
           uv venv --python 3.12 .venv
           uv pip install --python .venv/bin/python -r requirements.lock -e ".[dev]"
+
       - name: Lint
         run: |
           .venv/bin/ruff check .
           .venv/bin/ruff format --check .
+
       - name: Type check
         run: .venv/bin/mypy
+
+      # Every migration must apply, roll back and apply again, and the result
+      # must match the models (no forgotten migration).
+      - name: Migrations round trip
+        env:
+          RECOVERY_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: |
+          .venv/bin/alembic upgrade head
+          .venv/bin/alembic downgrade base
+          .venv/bin/alembic upgrade head
+          .venv/bin/alembic check
+
       - name: Test
         run: .venv/bin/pytest -q
+
+  image:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha,scope=recovery-image
+          cache-to: type=gha,scope=recovery-image,mode=max

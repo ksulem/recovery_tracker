@@ -8,6 +8,7 @@ The data lives in Postgres, so buttons keep working after a restart.
 
 import html
 import logging
+import uuid
 from contextlib import suppress
 
 from aiogram import Bot, F, Router
@@ -19,13 +20,25 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from recovery.conversation.engine import CheckinEngine, InvalidAnswer, flow_for, next_question
-from recovery.conversation.flows import FLOWS, Kind, Question
-from recovery.db.models import Checkin, User
-from recovery.domain import CheckinStatus, CheckinType
+from recovery import battery, discussion, thoughts, winddown
+from recovery.conversation.engine import (
+    CheckinEngine,
+    InvalidAnswer,
+    disabled_features,
+    flow_for,
+    next_question,
+)
+from recovery.conversation.flows import Kind, Question, get_flow
+from recovery.db.models import Checkin, ParkedThought, User
+from recovery.domain import CheckinStatus, CheckinType, FlowVariant
 from recovery.scheduler.prompts import cancel_reminder
-from recovery.telegram.callbacks import AnswerCb, StartCb, short_id
-from recovery.telegram.keyboards import offer_keyboard, question_keyboard, resume_keyboard
+from recovery.telegram.callbacks import AnswerCb, PinCb, StartCb, ThoughtCb, short_id
+from recovery.telegram.keyboards import (
+    build,
+    offer_keyboard,
+    question_keyboard,
+    resume_keyboard,
+)
 from recovery.texts import ru
 
 logger = logging.getLogger(__name__)
@@ -44,8 +57,15 @@ async def send_offer(bot: Bot, chat_id: int, kind: CheckinType) -> None:
 
 
 # --- core flow ------------------------------------------------------------------
-async def _ask(bot: Bot, user: User, state: FSMContext, checkin: Checkin, q: Question) -> None:
-    text = q.text + (ru.MULTI_HINT if q.kind == Kind.MULTI else "")
+async def _ask(
+    bot: Bot,
+    user: User,
+    state: FSMContext,
+    checkin: Checkin,
+    q: Question,
+    text: str | None = None,
+) -> None:
+    text = text or q.text + (ru.MULTI_HINT if q.kind == Kind.MULTI else "")
     msg = await bot.send_message(
         user.telegram_id, text, reply_markup=question_keyboard(q, short_id(checkin.id))
     )
@@ -58,8 +78,16 @@ async def _ask(bot: Bot, user: User, state: FSMContext, checkin: Checkin, q: Que
 async def _advance(
     bot: Bot, user: User, state: FSMContext, engine: CheckinEngine, checkin: Checkin
 ) -> None:
-    question = next_question(checkin)
-    if question is not None:
+    skip = disabled_features(user)
+    while (question := next_question(checkin, skip_features=skip)) is not None:
+        if question.kind == Kind.THOUGHT:
+            thought = await thoughts.walk_thought_today(engine.session, user)
+            if thought is None:  # nothing was taken on today's walk
+                await engine.skip(checkin, question)
+                continue
+            text = f"{question.text}\n«{html.escape(thought.text)}»"
+            await _ask(bot, user, state, checkin, question, text)
+            return
         await _ask(bot, user, state, checkin, question)
         return
     await engine.finish(checkin)
@@ -86,8 +114,30 @@ def _answered_text(question: Question, label: str) -> str:
     return f"{question.text}\n<b>→ {html.escape(label)}</b>"
 
 
+async def suggest_session(bot: Bot, user: User, thought: ParkedThought) -> None:
+    """Third "пусть полежит": offer — once — to take it to the psychologist."""
+    await bot.send_message(
+        user.telegram_id,
+        ru.THOUGHT_SUGGEST_SESSION.format(text=html.escape(thought.text)),
+        reply_markup=build(
+            [
+                [
+                    (ru.BTN_THOUGHT_SESSION, ThoughtCb(op="ssn", t=thought.id.hex).pack()),
+                    (ru.BTN_KEEP, ThoughtCb(op="keep", t=thought.id.hex).pack()),
+                ]
+            ]
+        ),
+    )
+
+
 async def begin(
-    bot: Bot, session: AsyncSession, user: User, state: FSMContext, kind: CheckinType
+    bot: Bot,
+    session: AsyncSession,
+    user: User,
+    state: FSMContext,
+    kind: CheckinType,
+    variant: str | None = None,
+    late_offer: bool = True,
 ) -> None:
     engine = CheckinEngine(session, user)
     name = ru.CHECKIN_NAME[kind]
@@ -103,8 +153,25 @@ async def begin(
                 reply_markup=resume_keyboard(kind),
             )
             return
-    checkin = await engine.start(kind)
-    await bot.send_message(user.telegram_id, FLOWS[kind].intro)
+    if kind == CheckinType.EVENING and late_offer and winddown.is_late(user):
+        if winddown.is_night(user):
+            # After midnight the evening is over: no review, only parking.
+            await bot.send_message(user.telegram_id, ru.NIGHT_PARK_ONLY)
+            return
+        await bot.send_message(
+            user.telegram_id,
+            ru.LATE_EVENING_OFFER,
+            reply_markup=build(
+                [
+                    [(ru.BTN_SHORT, StartCb(kind=kind, op="short").pack())],
+                    [(ru.BTN_FULL, StartCb(kind=kind, op="full").pack())],
+                    [(ru.BTN_NOT_NOW, StartCb(kind=kind, op="later").pack())],
+                ]
+            ),
+        )
+        return
+    checkin = await engine.start(kind, variant)
+    await bot.send_message(user.telegram_id, get_flow(kind, variant).intro)
     await _advance(bot, user, state, engine, checkin)
 
 
@@ -142,7 +209,12 @@ async def on_start_button(
     engine = CheckinEngine(session, user)
     if callback_data.op == "later":
         await cancel_reminder(session, user, kind)  # "not now" means no reminder later
-        await bot.send_message(user.telegram_id, ru.NOT_NOW)
+        late = winddown.is_late(user)
+        await bot.send_message(user.telegram_id, ru.LATE_NOT_NOW if late else ru.NOT_NOW)
+        return
+    if callback_data.op in ("short", "full"):
+        variant = FlowVariant.SHORT if callback_data.op == "short" else None
+        await begin(bot, session, user, state, kind, variant, late_offer=False)
         return
     if callback_data.op in ("resume", "restart") and kind != CheckinType.AD_HOC:
         existing = await engine.find_today(kind)
@@ -151,8 +223,8 @@ async def on_start_button(
                 await _advance(bot, user, state, engine, existing)
                 return
             await engine.abandon(existing)
-            checkin = await engine.start(kind)
-            await bot.send_message(user.telegram_id, FLOWS[kind].intro)
+            checkin = await engine.start(kind, existing.flow_variant)
+            await bot.send_message(user.telegram_id, flow_for(checkin).intro)
             await _advance(bot, user, state, engine, checkin)
             return
     await begin(bot, session, user, state, kind)
@@ -195,10 +267,13 @@ async def on_answer(
 
     if callback_data.op == "tog":
         selected: list[str] = list(data.get("sel", []))
-        if callback_data.v in selected:
-            selected.remove(callback_data.v)
+        value, none = callback_data.v, question.none_option
+        if value in selected:
+            selected.remove(value)
+        elif value == none:
+            selected = [value]  # "ничего из этого" clears the rest
         else:
-            selected.append(callback_data.v)
+            selected = [v for v in selected if v != none] + [value]
         await state.update_data(sel=selected)
         await cb.answer()
         if cb.message is not None:
@@ -208,10 +283,11 @@ async def on_answer(
                 )
         return
 
+    suggest: ParkedThought | None = None
     try:
         if callback_data.op == "skip":
             await engine.skip(checkin, question)
-            label = ru.ANSWER_SKIPPED
+            label = ru.ANSWER_NOTHING if question.kind == Kind.PARK else ru.ANSWER_SKIPPED
         elif callback_data.op == "done":
             selected = list(data.get("sel", []))
             await engine.answer(checkin, question, selected)
@@ -219,14 +295,25 @@ async def on_answer(
                 ru.ANSWER_NONE_SELECTED
             )
         else:
-            await engine.answer(checkin, question, callback_data.v)
-            label = question.option_label(callback_data.v)
+            suggest = await engine.answer(checkin, question, callback_data.v)
+            label = (
+                battery.bar(int(callback_data.v), user.battery_color, user.battery_reserve_pct)
+                if question.kind == Kind.PERCENT
+                else question.option_label(callback_data.v)
+            )
     except InvalidAnswer:
         await cb.answer(ru.STALE_QUESTION)
         return
 
     await cb.answer()
     await _close_prompt(bot, user.telegram_id, prompt, _answered_text(question, label))
+    if question.kind == Kind.PERCENT and battery.in_reserve(
+        checkin.battery_pct, checkin.battery_reserve_pct
+    ):
+        # Exercise, step 4: a low charge is information, not a failure.
+        await bot.send_message(user.telegram_id, ru.BATTERY_IN_RESERVE[checkin.checkin_type])
+    if suggest is not None:
+        await suggest_session(bot, user, suggest)
     await _advance(bot, user, state, engine, checkin)
 
 
@@ -241,16 +328,50 @@ async def on_text_in_checkin(
         raise SkipHandler  # not ours any more: let the free-text handler take it
     question = flow_for(checkin).get(data.get("question", ""))
     text = message.text or ""
-    if question is not None and question.kind == Kind.TEXT:
-        await engine.answer(checkin, question, text)
-        await _close_prompt(
-            bot, user.telegram_id, data.get("prompt"), _answered_text(question, "записано")
+    if question is not None and question.kind in (Kind.TEXT, Kind.PARK):
+        try:
+            await engine.answer(checkin, question, text)
+        except InvalidAnswer:
+            await message.answer(ru.NOTE_ADDED)  # blank text: nothing to store
+            return
+        label = (
+            ru.ANSWER_PARKED.format(count=len(thoughts.split(text)))
+            if question.kind == Kind.PARK
+            else ru.ANSWER_SAVED
         )
+        await _close_prompt(
+            bot, user.telegram_id, data.get("prompt"), _answered_text(question, label)
+        )
+        if question.column == "preoccupation_note":
+            await bot.send_message(
+                user.telegram_id,
+                ru.PIN_OFFER,
+                reply_markup=build([[(ru.BTN_THOUGHT_SESSION, PinCb(c=checkin.id.hex).pack())]]),
+            )
         await _advance(bot, user, state, engine, checkin)
         return
     # A free-form remark while a button question is open: keep it as a note.
     await engine.add_note(checkin, text)
     await message.answer(ru.NOTE_ADDED)
+
+
+async def on_pin(
+    cb: CallbackQuery, callback_data: PinCb, bot: Bot, session: AsyncSession, user: User
+) -> None:
+    checkin = await CheckinEngine(session, user).get(uuid.UUID(hex=callback_data.c))
+    if checkin is None or not checkin.preoccupation_note:
+        await cb.answer(ru.STALE_QUESTION)
+        return
+    await discussion.add_item(session, user, checkin.preoccupation_note)
+    count = await discussion.count_open(session, user)
+    await cb.answer(ru.DISCUSS_ADDED.format(count=count))
+    if cb.message is not None:
+        await _close_prompt(
+            bot,
+            user.telegram_id,
+            cb.message.message_id,
+            ru.DISCUSS_ADDED.format(count=count),
+        )
 
 
 def make_router() -> Router:
@@ -260,6 +381,7 @@ def make_router() -> Router:
     router.message.register(cmd_now, Command("now"))
     router.callback_query.register(on_start_button, StartCb.filter())
     router.callback_query.register(on_answer, AnswerCb.filter())
+    router.callback_query.register(on_pin, PinCb.filter())
     router.message.register(
         on_text_in_checkin, CheckinStates.active, F.text, ~F.text.startswith("/")
     )
