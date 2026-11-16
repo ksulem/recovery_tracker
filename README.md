@@ -32,6 +32,23 @@ reminder, and none after "Не сейчас" or during quiet hours. The session 
 arrives 3 hours before the session. If a message suggests immediate danger, the
 bot stops the normal flow and shows an emergency number.
 
+### What the reports line up
+
+`/week` and the session brief (`/session`) contain, besides each day's records:
+
+- **Вечер → следующее утро:** each evening (charge, obligations, episodes,
+  what kept the mind busy, pressure) next to the night and the following
+  morning (sleep, falling asleep, what happened before sleep, charge), plus
+  how often the morning charge was lower than the evening one.
+- **Эпизоды за период:** per kind of episode, how many times it gave, took,
+  did both or neither. For "both", which resources it gave and took; split by
+  "по желанию / по необходимости".
+- **Гипотезы:** the week-2 hypotheses as questions, each with the matching
+  facts and counts side by side.
+
+These are counts, never averages, and never "X caused Y". With fewer than
+three cases the line says *данных недостаточно*.
+
 ### Evening wind-down and parked thoughts
 
 For when the day review drifts towards bedtime and thoughts keep going late

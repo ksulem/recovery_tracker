@@ -484,7 +484,9 @@ Week-2 hypotheses this phase makes observable (not "proves"):
 | An evening improvement doesn't always last until morning | evening → next morning pairs |
 
 No changes to the owner's routine are suggested from this data until 7–14 more
-days are collected.
+days are collected. Hypotheses are shown as questions ("Помогают ли дни без
+обязательств восстановлению?"), not claims. Implemented in
+`recovery/reports/patterns.py` as pure functions over the period's digest.
 
 ### Decisions and defaults
 

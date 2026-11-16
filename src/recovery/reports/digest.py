@@ -444,6 +444,19 @@ async def wind_down_section(session: AsyncSession, user: User, digest: Digest) -
     return "\n\n".join([ru.WIND_DOWN_SECTION_TITLE, *lines])
 
 
+def pattern_sections(digest: Digest) -> list[str]:
+    """Evening → next morning, episodes and hypotheses (see reports.patterns)."""
+    # Imported here: patterns builds on the Day/Digest types defined in this module.
+    from recovery.reports import patterns
+
+    sections = (
+        patterns.evening_to_morning_section(digest),
+        patterns.episodes_section(digest),
+        patterns.hypotheses_section(digest),
+    )
+    return [s for s in sections if s]
+
+
 def coverage_line(digest: Digest) -> str:
     return (
         f"Записи есть за {digest.days_with_records} из {digest.total_days} дн. "
@@ -467,6 +480,7 @@ async def week_markdown(session: AsyncSession, user: User) -> tuple[str, str]:
             "_Только записанные факты, без выводов. Ресурсы показаны по отдельности._",
             *([battery] if battery else []),
             *([wind_down] if wind_down else []),
+            *pattern_sections(digest),
             "## По дням",
             render_days(digest),
         ]
@@ -538,6 +552,7 @@ async def session_brief(session: AsyncSession, user: User) -> SessionBrief:
     wind_down = await wind_down_section(session, user, digest)
     if wind_down:
         parts.append(wind_down)
+    parts += pattern_sections(digest)
     parts += ["## По дням", render_days(digest)]
     return SessionBrief(
         start=start,
