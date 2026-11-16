@@ -85,8 +85,9 @@ services:
       # run every 5s during this window. start_interval needs Docker Engine 25+.
       start_period: 180s
       start_interval: 5s
-    # Startup peaks around 120 MB, steady state is ~50 MB.
-    mem_limit: 160m
+    # ~190 MB once imported (aiogram's Telegram types alone are ~130 MB). A
+    # tighter cap makes the bot swap its own memory and start in minutes.
+    mem_limit: 256m
     restart: unless-stopped
 
 volumes:
