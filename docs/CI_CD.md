@@ -24,7 +24,10 @@ A release is never deployed without passing CI: CD calls the CI workflow first.
      sent over stdin and used through a throwaway Docker config, so
      `~/.docker/config.json` and other projects on the server are not touched;
    - writes the image into `.env` as `RECOVERY_IMAGE`, so a manual
-     `docker compose up -d` later runs the same version;
+     `docker compose up -d` later runs the same version. The previous value is
+     the rollback target. On the very first CD deploy there is none yet, so
+     the image of the bot that is running at that moment (built on the server)
+     is used instead;
    - runs `docker compose up -d --no-build migrate bot`: migrations first,
      then the bot;
    - waits up to 3 minutes for the bot's healthcheck. If the bot doesn't get
