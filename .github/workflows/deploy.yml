@@ -79,7 +79,9 @@ jobs:
     name: Deploy to server
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Pull (~3 min on the 1 GB VM) + up to 5 min for the new bot + up to 5 min
+    # for a rollback. Cancelling mid-rollback could leave the bot down.
+    timeout-minutes: 25
     # Secrets live in this environment; it can also require a manual approval
     # (Settings → Environments → production → Required reviewers).
     environment: production

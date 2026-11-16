@@ -81,7 +81,10 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 60s
+      # Slow cold starts on a small VM (swap) don't count as failures; checks
+      # run every 5s during this window. start_interval needs Docker Engine 25+.
+      start_period: 180s
+      start_interval: 5s
     # Startup peaks around 120 MB, steady state is ~50 MB.
     mem_limit: 160m
     restart: unless-stopped

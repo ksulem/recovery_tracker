@@ -20,7 +20,7 @@
 set -euo pipefail
 
 IMAGE=${1:?usage: deploy.sh <image>}
-HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-180}
+HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-300}
 
 log() { echo "$(date -u +%H:%M:%S) $*"; }
 fail() { log "ERROR: $*"; exit 1; }
@@ -54,25 +54,31 @@ set_image() {
     fi
 }
 
+# Container state when it isn't running (exited, dead, restarting...), otherwise
+# its health. A stopped container keeps its last health status, so the state
+# has to be checked first.
 bot_health() {
     local id
     id=$(docker compose ps -q bot 2>/dev/null || true)
     [ -n "$id" ] || { echo "missing"; return; }
-    docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id"
+    docker inspect -f '{{if ne .State.Status "running"}}{{.State.Status}}{{else if .State.Health}}{{.State.Health.Status}}{{else}}running{{end}}' "$id"
 }
 
+# Waits up to HEALTH_TIMEOUT seconds of wall-clock time. "unhealthy" is not
+# final: on the small VM a cold start can outlast the healthcheck's retries,
+# and Docker flips the container back to healthy on the first passing check.
+# Only a container that has stopped ends the wait early.
 wait_healthy() {
-    local waited=0 status
-    while [ "$waited" -lt "$HEALTH_TIMEOUT" ]; do
+    local start=$SECONDS status
+    while [ $((SECONDS - start)) -lt "$HEALTH_TIMEOUT" ]; do
         status=$(bot_health)
         case "$status" in
             healthy) return 0 ;;
-            unhealthy|exited|dead) break ;;
+            exited|dead) break ;;
         esac
         sleep 5
-        waited=$((waited + 5))
     done
-    log "bot status after ${waited}s: $(bot_health)"
+    log "bot status after $((SECONDS - start))s: $(bot_health)"
     return 1
 }
 
