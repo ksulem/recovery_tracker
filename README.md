@@ -172,7 +172,7 @@ Changing a question or adding an option needs no change to the logic.
   - a Raspberry Pi 4 or 5 with a 64-bit OS;
   - a home computer or NAS that stays on.
 
-  The bot needs about 160 MB of RAM and Postgres about 100 MB. Disk use is under
+  The bot needs about 200 MB of RAM and Postgres about 100 MB. Disk use is under
   1 GB including the Docker images. No open ports or domain name are needed:
   the bot only makes outgoing connections to Telegram.
 - **A Telegram account.**
