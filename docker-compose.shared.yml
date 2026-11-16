@@ -50,6 +50,11 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      # On the shared 1 GB VM a cold start can take ~2.5 minutes (swap). Failed
+      # checks inside start_period don't count; checks run every 5s there, so
+      # the bot turns healthy as soon as it's up. Needs Docker Engine 25+.
+      start_period: 180s
+      start_interval: 5s
     # Hard cap on a 1 GB VM shared with the watering stack: if this bot leaks,
     # it gets OOM-killed and restarted instead of starving the other services.
     mem_limit: 160m

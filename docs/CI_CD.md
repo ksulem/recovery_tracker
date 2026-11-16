@@ -30,7 +30,9 @@ A release is never deployed without passing CI: CD calls the CI workflow first.
      is used instead;
    - runs `docker compose up -d --no-build migrate bot`: migrations first,
      then the bot;
-   - waits up to 3 minutes for the bot's healthcheck. If the bot doesn't get
+   - waits up to 5 minutes for the bot's healthcheck. A cold start on a 1 GB VM
+     can take a few minutes, so a temporary `unhealthy` doesn't stop the wait;
+     only a container that has exited does. If the bot doesn't get
      healthy, it starts the previous image again and fails the workflow. The
      bot's own logs are deliberately not printed: Actions logs of a public
      repository are public, and the bot's logs contain its username and may
