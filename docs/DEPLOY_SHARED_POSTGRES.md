@@ -43,7 +43,7 @@ Two safeguards keep the projects apart:
    ```
 
 3. **Memory check.** Look at real usage before adding the bot
-   (`mem_limit: 160m`, startup peak about 120 MB):
+   (`mem_limit: 256m`; it holds about 190 MB once started):
 
    ```bash
    docker stats --no-stream && free -m
