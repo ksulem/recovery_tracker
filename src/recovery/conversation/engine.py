@@ -232,14 +232,23 @@ class CheckinEngine:
         )
 
     async def _store_one(self, checkin: Checkin, question: Question, value: str) -> None:
-        """Single-choice answers that live outside ``checkins`` columns."""
-        episode = await self._episode(checkin, question.item)
+        """Answers that live on a day episode rather than in a ``checkins`` column."""
+        kind = question.item
+        if question.target == Target.EPISODE_NOTE:
+            kind = "other"  # the "Другое" episode
+        episode = await self._episode(checkin, kind)
         if episode is None:
             return
         if question.target == Target.EPISODE_EFFECT:
             episode.effect = value
         elif question.target == Target.EPISODE_CHOICE:
             episode.choice = value
+        elif question.target == Target.EPISODE_NOTE:
+            episode.note = value.strip()
+        elif question.target == Target.EPISODE_GAVE_NOTE:
+            episode.gave_note = value.strip()
+        elif question.target == Target.EPISODE_TOOK_NOTE:
+            episode.took_note = value.strip()
 
     @staticmethod
     def _append(existing: str | None, text: str) -> str:

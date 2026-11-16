@@ -192,8 +192,17 @@ async def collect(session: AsyncSession, user: User, start: date, end: date) -> 
 
 
 # --- rendering ---------------------------------------------------------------------
-def _labels(values: list[str], labels: dict[str, str]) -> str:
-    return ", ".join(labels.get(v, v).lower() for v in values)
+def _label(value: str, labels: dict[str, str]) -> str:
+    """'другое' instead of the long button text 'Другое — опишу своими словами'."""
+    return ru.OTHER_SHORT if value == "other" else labels.get(value, value).lower()
+
+
+def _labels(values: list[str], labels: dict[str, str], note: str | None = None) -> str:
+    """'раздражительность, другое: «…»' — the owner's own words after 'другое'."""
+    parts = [_label(v, labels) for v in values if v != "other"]
+    if "other" in values:
+        parts.append(f"{ru.OTHER_SHORT}: «{note}»" if note else ru.OTHER_SHORT)
+    return ", ".join(parts)
 
 
 def _scores_line(c: Checkin) -> str | None:
@@ -210,26 +219,60 @@ def _charge(c: Checkin) -> str:
     return text
 
 
-def _marks_line(c: Checkin, day: Day, kind: str, qid: str, labels: dict[str, str]) -> str | None:
+def _marks_line(
+    c: Checkin,
+    day: Day,
+    kind: str,
+    qid: str,
+    labels: dict[str, str],
+    note: str | None = None,
+) -> str | None:
     """Marked values; "ничего из этого" when that was the answer; None if skipped."""
     values = day.marks.get((c.id, kind), [])
     if values:
-        return _labels(values, labels)
+        return _labels(values, labels, note)
     if (c.answers or {}).get(qid) == ["none"]:
         return labels["none"].lower()
     return None
 
 
+def pressure_label(value: str) -> str:
+    return _label(value, ru.PRESSURE_LABELS)
+
+
+def pressure_text(c: Checkin, values: list[str]) -> str | None:
+    """'вина за отдых, другое: «…»'; 'ничего из этого'; None if not asked or skipped."""
+    if not values:
+        none = (c.answers or {}).get("press") == ["none"]
+        return ru.PRESSURE_LABELS["none"].lower() if none else None
+    return _labels(values, ru.PRESSURE_LABELS, c.pressure_note)
+
+
+def episode_name(e: DayEpisode) -> str:
+    if e.kind == "other":
+        return f"{ru.OTHER_SHORT}: «{e.note}»" if e.note else ru.OTHER_SHORT
+    return ru.EPISODE_LABELS[e.kind].lower()
+
+
+def onset_text(c: Checkin) -> str | None:
+    if not c.sleep_onset:
+        return None
+    text = ru.SLEEP_ONSET_LABELS[c.sleep_onset].lower()
+    if c.sleep_onset == "other" and c.sleep_onset_note:
+        text += f" («{c.sleep_onset_note}»)"
+    return text
+
+
 def episode_text(e: DayEpisode) -> str:
     """'общение с близкими — и то, и другое (дало: эмоционально; забрало: телу; по желанию)'."""
-    text = ru.EPISODE_LABELS[e.kind].lower()
+    text = episode_name(e)
     if e.effect:
         text += f" — {ru.EFFECT_LABELS[e.effect].lower()}"
     details = []
     if e.gave:
-        details.append(f"дало: {_labels(e.gave, ru.RESOURCE_LABELS)}")
+        details.append(f"дало: {_labels(e.gave, ru.RESOURCE_LABELS, e.gave_note)}")
     if e.took:
-        details.append(f"забрало: {_labels(e.took, ru.RESOURCE_LABELS)}")
+        details.append(f"забрало: {_labels(e.took, ru.RESOURCE_LABELS, e.took_note)}")
     if e.choice:
         details.append(ru.CHOICE_LABELS[e.choice].lower())
     if details:
@@ -249,8 +292,9 @@ def _checkin_lines(c: Checkin, day: Day) -> list[str]:
         head = []
         if c.sleep_quality:
             head.append(f"после сна: {ru.SLEEP_LABELS.get(c.sleep_quality, '?').lower()}")
-        if c.sleep_onset:
-            head.append(f"заснуть: {ru.SLEEP_ONSET_LABELS[c.sleep_onset].lower()}")
+        onset = onset_text(c)
+        if onset:
+            head.append(f"заснуть: {onset}")
         if c.battery_pct is not None:
             head.append(f"заряд: {_charge(c)}")
         if c.physical_score is not None:
@@ -261,7 +305,9 @@ def _checkin_lines(c: Checkin, day: Day) -> list[str]:
             head.append(f"день: {ru.OUTLOOK_LABELS[c.day_outlook].lower()}")
         if head:
             lines.append(" · ".join(head))
-        pre_sleep = _marks_line(c, day, MarkKind.PRE_SLEEP, "presleep", ru.PRE_SLEEP_LABELS)
+        pre_sleep = _marks_line(
+            c, day, MarkKind.PRE_SLEEP, "presleep", ru.PRE_SLEEP_LABELS, c.pre_sleep_note
+        )
         if pre_sleep:
             lines.append(f"Перед сном: {pre_sleep}")
         if c.expected_heavy_load:
@@ -296,7 +342,7 @@ def _checkin_lines(c: Checkin, day: Day) -> list[str]:
             lines.append(f"Помогало: {_labels([e.activity for e in recs], ru.RECOVERY_LABELS)}")
         if c.pleasant_energy:
             lines.append(f"Силы на приятное: {ru.ENERGY_LABELS[c.pleasant_energy].lower()}")
-        pressure = _marks_line(c, day, MarkKind.PRESSURE, "press", ru.PRESSURE_LABELS)
+        pressure = pressure_text(c, day.marks.get((c.id, MarkKind.PRESSURE), []))
         if pressure:
             lines.append(f"Давление на себя: {pressure}")
         scores = None if c.checkin_type == CheckinType.AD_HOC else _scores_line(c)
@@ -306,7 +352,8 @@ def _checkin_lines(c: Checkin, day: Day) -> list[str]:
             lines.append(f"Интерес: {c.interest_score}/5")
         symptoms = day.symptoms.get(c.id, [])
         if symptoms:
-            lines.append(f"Признаки перегрузки: {_labels(symptoms, ru.SYMPTOM_LABELS)}")
+            signs = _labels(symptoms, ru.SYMPTOM_LABELS, c.signs_note)
+            lines.append(f"Признаки перегрузки: {signs}")
         if c.tomorrow_note:
             lines.append(f"На завтра: «{c.tomorrow_note}»")
     if c.notes:

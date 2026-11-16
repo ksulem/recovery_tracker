@@ -48,6 +48,9 @@ class Target(StrEnum):
     EPISODE_GAVE = "episode_gave"
     EPISODE_TOOK = "episode_took"
     EPISODE_CHOICE = "episode_choice"
+    EPISODE_NOTE = "episode_note"  # own words for the "Другое" episode
+    EPISODE_GAVE_NOTE = "episode_gave_note"
+    EPISODE_TOOK_NOTE = "episode_took_note"
     PRESSURE = "pressure"  # checkin_marks
     PRE_SLEEP = "pre_sleep"  # checkin_marks
 
@@ -115,7 +118,7 @@ class Flow:
         source = self.get(question.each) if question.each else None
         if source is None or item not in {o.value for o in source.options}:
             return None
-        return question.instance(item, source.option_label(item))
+        return question.instance(item, _item_label(source, item))
 
     def expanded(self, answers: dict[str, object]) -> list[Question]:
         """The flow with templates expanded for the items selected so far."""
@@ -140,8 +143,13 @@ class Flow:
             for item in chosen[: source.max_items]:
                 for template in group:
                     if template.items is None or item in template.items:
-                        out.append(template.instance(item, source.option_label(item)))
+                        out.append(template.instance(item, _item_label(source, item)))
         return out
+
+
+def _item_label(source: Question, item: str) -> str:
+    """Label used inside per-item questions: just "Другое" for the own-words option."""
+    return "Другое" if item == "other" else source.option_label(item)
 
 
 def _matches(answer: object, values: frozenset[str]) -> bool:
@@ -215,6 +223,14 @@ WALK_THOUGHT = Question(
 PARK = Question("park", ru.Q_PARK, Kind.PARK)
 
 
+OTHER = frozenset({"other"})
+
+
+def _other_note(qid: str, text: str, after: str, **kw: object) -> Question:
+    """'Другое — опишу своими словами' was picked in ``after``: ask what exactly."""
+    return Question(qid, text, Kind.TEXT, when=(after, OTHER), **kw)  # type: ignore[arg-type]
+
+
 def _battery(text: str) -> Question:
     return Question("battery", text, Kind.PERCENT, column="battery_pct", feature=battery.FEATURE)
 
@@ -246,6 +262,9 @@ MORNING = Flow(
             options=_options(ru.SLEEP_ONSET_LABELS),
             feature=SLEEP_FEATURE,
         ),
+        _other_note(
+            "onsetnote", ru.Q_ONSET_NOTE, "onset", column="sleep_onset_note", feature=SLEEP_FEATURE
+        ),
         Question(
             "presleep",
             ru.Q_PRE_SLEEP,
@@ -253,6 +272,13 @@ MORNING = Flow(
             target=Target.PRE_SLEEP,
             options=_options(ru.PRE_SLEEP_LABELS),
             none_option="none",
+            feature=SLEEP_FEATURE,
+        ),
+        _other_note(
+            "psnote",
+            ru.Q_PRE_SLEEP_NOTE,
+            "presleep",
+            column="pre_sleep_note",
             feature=SLEEP_FEATURE,
         ),
         _battery(ru.Q_BATTERY_MORNING),
@@ -308,6 +334,7 @@ EVENING = Flow(
             none_option="none",
             max_items=MAX_RATED_EPISODES,
         ),
+        _other_note("epnote", ru.Q_EPISODE_OTHER_NOTE, "ep", target=Target.EPISODE_NOTE),
         Question(
             "rate",
             ru.Q_EPISODE_RATE,
@@ -326,6 +353,14 @@ EVENING = Flow(
             when=("rate.{item}", frozenset({"both"})),
         ),
         Question(
+            "gnote",
+            ru.Q_GAVE_NOTE,
+            Kind.TEXT,
+            target=Target.EPISODE_GAVE_NOTE,
+            each="ep",
+            when=("gave.{item}", OTHER),
+        ),
+        Question(
             "took",
             ru.Q_EPISODE_TOOK,
             Kind.MULTI,
@@ -333,6 +368,14 @@ EVENING = Flow(
             options=_options(ru.RESOURCE_LABELS),
             each="ep",
             when=("rate.{item}", frozenset({"both"})),
+        ),
+        Question(
+            "tnote",
+            ru.Q_TOOK_NOTE,
+            Kind.TEXT,
+            target=Target.EPISODE_TOOK_NOTE,
+            each="ep",
+            when=("took.{item}", OTHER),
         ),
         Question(
             "why",
@@ -377,6 +420,14 @@ EVENING = Flow(
             every_days=2,
             feature=HYPOTHESES_FEATURE,
         ),
+        Question(
+            "pressnote",
+            ru.Q_PRESSURE_NOTE,
+            Kind.TEXT,
+            column="pressure_note",
+            feature=HYPOTHESES_FEATURE,
+            when=("press", frozenset({"other"})),
+        ),
         Question("more", ru.Q_MORE_DETAILS, Kind.GATE, options=YES_NO, opens="details"),
         _scale("phys", ru.Q_PHYSICAL, "physical_score", block="details"),
         _scale("emo", ru.Q_EMOTIONAL, "emotional_score", block="details"),
@@ -399,6 +450,7 @@ EVENING = Flow(
             options=SIGNS_OPTIONS,
             block="details",
         ),
+        _other_note("snote", ru.Q_SIGNS_NOTE, "signs", column="signs_note", block="details"),
         Question("tmrw", ru.Q_TOMORROW, Kind.TEXT, column="tomorrow_note"),
         WALK_THOUGHT,
         PARK,
@@ -419,6 +471,7 @@ AD_HOC = Flow(
             target=Target.SYMPTOMS,
             options=SIGNS_OPTIONS,
         ),
+        _other_note("snote", ru.Q_SIGNS_NOTE, "signs", column="signs_note"),
         Question("note", ru.Q_NOTE_NOW, Kind.TEXT, column="notes"),
     ),
 )

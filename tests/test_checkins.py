@@ -371,3 +371,48 @@ async def test_local_date_uses_the_owner_timezone(make_client: Any, db: Factory)
     assert c.tz_name == "Asia/Tbilisi"
     assert c.local_date == date(2026, 11, 8)
     assert c.created_at_utc == datetime(2026, 11, 7, 21, 30, tzinfo=UTC)
+
+
+async def test_pressure_in_own_words(make_client: Any, db: Factory) -> None:
+    client = make_client()
+    with time_machine.travel(EVEN_DAY, tick=False):
+        await client.send("/evening")
+        for _ in range(3):
+            await client.click_button(ru.BTN_SKIP)  # compared to morning, battery, obligations
+        await client.click_button(ru.BTN_DONE)  # no episodes
+        await client.click_button(ru.BTN_SKIP)  # preoccupation
+        await client.click_button(ru.BTN_SKIP)  # energy
+        assert client.last_text().startswith(ru.Q_PRESSURE)
+        await client.click_button("Чувство вины за отдых")
+        await client.click_button("Другое")
+        await client.click_button(ru.BTN_DONE)
+        assert client.last_text() == ru.Q_PRESSURE_NOTE
+        await client.send("Будто подвожу команду, когда беру выходной")
+        assert client.last_text() == ru.Q_MORE_DETAILS
+        await client.click_button(ru.BTN_FINISH)
+        await client.send("/week")
+
+    [c] = await _checkins(db)
+    assert c.pressure_note == "Будто подвожу команду, когда беру выходной"
+    async with db() as s:
+        marks = sorted((await s.scalars(select(CheckinMark.value))).all())
+    assert marks == ["guilt_resting", "other"]
+    week = client.documents()[-1].document.data.decode()
+    assert (
+        "- Давление на себя: чувство вины за отдых, другое: "
+        "«Будто подвожу команду, когда беру выходной»"
+    ) in week
+
+
+async def test_pressure_note_only_after_other(make_client: Any, db: Factory) -> None:
+    client = make_client()
+    with time_machine.travel(EVEN_DAY, tick=False):
+        await client.send("/evening")
+        for _ in range(3):
+            await client.click_button(ru.BTN_SKIP)
+        await client.click_button(ru.BTN_DONE)
+        await client.click_button(ru.BTN_SKIP)
+        await client.click_button(ru.BTN_SKIP)
+        await client.click_button("Чувство вины за отдых")
+        await client.click_button(ru.BTN_DONE)
+        assert client.last_text() == ru.Q_MORE_DETAILS  # no "что именно?"

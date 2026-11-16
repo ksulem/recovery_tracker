@@ -105,6 +105,12 @@ Answers are buttons. Every question has **Пропустить** (skip) and **З
 unfinished check-in the same day, the bot offers **Продолжить / Начать заново /
 Не сейчас** (continue / start over / not now).
 
+Every list of options also has **Другое — опишу своими словами**. Picking it
+brings one short follow-up («Что именно?»), and the answer appears in the
+reports as «другое: «…»». This covers the day's episodes, what an episode
+gave or took, what happened before sleep, signs of overload, pressure on
+oneself and «трудно по другой причине» when falling asleep.
+
 Questions marked 🧩 belong to optional sets that can be switched off in
 `/settings → 🧩 Дополнительные вопросы`: **Как получилось заснуть** (morning)
 and **Вопросы для проверки гипотез** (evening).
@@ -135,7 +141,7 @@ and **Вопросы для проверки гипотез** (evening).
 | ↳ | 🧩 *Social contact and chores:* «… — по своему желанию или по необходимости?» | По желанию · По необходимости |
 | 5 | 🧩 Есть ли что-то, о чём постоянно думаешь, или ситуация, которая продолжает занимать? *(Anything you keep thinking about?)* | Нет · Немного · Да, сильно; if yes, an optional short note with a "📌 На сессию" button |
 | 6 | Остались ли силы на что-нибудь приятное? *(Any energy left for something pleasant?)* | Да, и получилось · Хотелось, но не было сил · Ничего не хотелось · Не знаю |
-| 7 | 🧩 *Every other evening:* Было ли сегодня что-то из этого? *(Any of this today?)* | several of: Казалось, что надо быть продуктивнее · Чувство вины за отдых · Казалось, что недостаточно стараюсь восстановиться · or Ничего из этого |
+| 7 | 🧩 *Every other evening:* Было ли сегодня что-то из этого? *(Any of this today?)* | several of: Казалось, что надо быть продуктивнее · Чувство вины за отдых · Казалось, что недостаточно стараюсь восстановиться · Другое — опишу своими словами (then «Что именно?») · or Ничего из этого |
 | 8 | Хочешь отметить состояние подробнее? *(Add more detail? About a minute)* | Да · Нет |
 | ↳ | *If yes:* physical, emotional, social and cognitive resource, overall wellbeing *(each 0–10)*; interest in things *(0–5, from "ничего не хочется" to "хочется нового")*; signs of overload *(e.g. "Хочется, чтобы никто не трогал", "Раздражительность", "Приятное ощущается как нагрузка")* | |
 | 9 | Есть ли что-то важное, что стоит учесть завтра? *(Anything to keep in mind for tomorrow?)* | free text |
@@ -156,6 +162,11 @@ tell what it gave and what it took. Now each episode says it: for example,
 | 2 | Как ты сейчас в целом? *(How are you overall?)* | 0 (очень плохо) … 10 (хорошо) |
 | 3 | Что сейчас происходит? *(What's going on?)* | several signs of overload, as above |
 | 4 | Если хочется — опиши словами, что происходит. *(Describe it in words, if you like)* | free text |
+
+Diagrams of every flow — which question comes after which, and what each one
+depends on (settings, earlier answers, every other day) — are in
+[`docs/FLOWS.md`](docs/FLOWS.md). They are generated from the code, so they
+always match what the bot asks.
 
 The questions are plain data in
 [`src/recovery/conversation/flows.py`](src/recovery/conversation/flows.py), and
