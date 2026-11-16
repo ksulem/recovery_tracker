@@ -220,6 +220,31 @@ def _marks_line(c: Checkin, day: Day, kind: str, qid: str, labels: dict[str, str
     return None
 
 
+def pressure_label(value: str) -> str:
+    """Short form for reports: 'другое' instead of the button's long label."""
+    if value == "other":
+        return ru.PRESSURE_OTHER_SHORT
+    return ru.PRESSURE_LABELS[value].lower()
+
+
+def pressure_text(c: Checkin, values: list[str]) -> str | None:
+    """'вина за отдых, другое: «…»'; 'ничего из этого'; None if not asked or skipped."""
+    if not values:
+        return (
+            ru.PRESSURE_LABELS["none"].lower()
+            if (c.answers or {}).get("press") == ["none"]
+            else None
+        )
+    parts = [pressure_label(v) for v in values if v != "other"]
+    if "other" in values:
+        parts.append(
+            f"{ru.PRESSURE_OTHER_SHORT}: «{c.pressure_note}»"
+            if c.pressure_note
+            else ru.PRESSURE_OTHER_SHORT
+        )
+    return ", ".join(parts)
+
+
 def episode_text(e: DayEpisode) -> str:
     """'общение с близкими — и то, и другое (дало: эмоционально; забрало: телу; по желанию)'."""
     text = ru.EPISODE_LABELS[e.kind].lower()
@@ -296,7 +321,7 @@ def _checkin_lines(c: Checkin, day: Day) -> list[str]:
             lines.append(f"Помогало: {_labels([e.activity for e in recs], ru.RECOVERY_LABELS)}")
         if c.pleasant_energy:
             lines.append(f"Силы на приятное: {ru.ENERGY_LABELS[c.pleasant_energy].lower()}")
-        pressure = _marks_line(c, day, MarkKind.PRESSURE, "press", ru.PRESSURE_LABELS)
+        pressure = pressure_text(c, day.marks.get((c.id, MarkKind.PRESSURE), []))
         if pressure:
             lines.append(f"Давление на себя: {pressure}")
         scores = None if c.checkin_type == CheckinType.AD_HOC else _scores_line(c)

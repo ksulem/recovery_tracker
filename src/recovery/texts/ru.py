@@ -488,8 +488,11 @@ PRESSURE_LABELS = {
     "productivity": "Казалось, что надо быть продуктивнее",
     "guilt_resting": "Чувство вины за отдых",
     "not_enough_recovery": "Казалось, что недостаточно стараюсь восстановиться",
+    "other": "Другое — опишу своими словами",
     "none": "Ничего из этого",
 }
+Q_PRESSURE_NOTE = "Что именно? Можно коротко, своими словами."
+PRESSURE_OTHER_SHORT = "другое"
 Q_SLEEP_ONSET = "Как получилось заснуть?"
 SLEEP_ONSET_LABELS = {
     "easy": "Легко",

@@ -237,6 +237,7 @@ class Checkin(LocalTimeMixin, Base):
     obligations: Mapped[str | None] = mapped_column(Text)
     preoccupation: Mapped[str | None] = mapped_column(Text)
     preoccupation_note: Mapped[str | None] = mapped_column(Text)
+    pressure_note: Mapped[str | None] = mapped_column(Text)  # "другое" in the pressure question
     sleep_onset: Mapped[str | None] = mapped_column(Text)
     # NULL = the regular flow; 'short' = the late-evening version.
     flow_variant: Mapped[str | None] = mapped_column(Text)

@@ -241,6 +241,7 @@ class PressureSignal(StrEnum):
     PRODUCTIVITY = "productivity"  # надо было быть продуктивнее
     GUILT_RESTING = "guilt_resting"  # вина за отдых
     NOT_ENOUGH_RECOVERY = "not_enough_recovery"  # недостаточно стараюсь восстановиться
+    OTHER = "other"  # своими словами (checkins.pressure_note)
 
 
 class PreSleepActivity(StrEnum):

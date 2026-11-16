@@ -13,7 +13,7 @@ from datetime import date, timedelta
 
 from recovery.db.models import Checkin, DayEpisode
 from recovery.domain import CheckinType, MarkKind
-from recovery.reports.digest import Day, Digest, _ordered_episodes
+from recovery.reports.digest import Day, Digest, _ordered_episodes, pressure_label
 from recovery.texts import ru
 
 MIN_CASES = 3
@@ -93,8 +93,7 @@ def _evening_parts(p: Pair) -> list[str]:
     pressure = _pressure(p.day, c)
     if pressure is not None:
         parts.append(
-            "давление: "
-            + (", ".join(ru.PRESSURE_LABELS[v].lower() for v in pressure) if pressure else "нет")
+            "давление: " + (", ".join(pressure_label(v) for v in pressure) if pressure else "нет")
         )
     return parts
 
@@ -265,9 +264,7 @@ def hypotheses_section(digest: Digest) -> str | None:
         rows = []
         if asked:
             signal_counts = Counter(s for _, signals in asked for s in signals or [])
-            which = ", ".join(
-                f"{ru.PRESSURE_LABELS[k].lower()} {n}" for k, n in signal_counts.most_common()
-            )
+            which = ", ".join(f"{pressure_label(k)} {n}" for k, n in signal_counts.most_common())
             row = (
                 f"- вечеров с вопросом: {len(asked)}, из них с давлением: "
                 f"{sum(1 for _, s in asked if s)}"
