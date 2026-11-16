@@ -256,7 +256,9 @@ Alembic · APScheduler · PostgreSQL 16. Design and milestones:
 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
 
 Feature work happens on `feature/*` branches, which are merged into `dev`.
-`main` gets releases from `dev`.
+`main` gets releases from `dev`. GitHub Actions runs CI on `dev` and on pull
+requests, and deploys every push to `main` to the server: see
+[`docs/CI_CD.md`](docs/CI_CD.md).
 
 You don't need Docker for development, only [uv](https://docs.astral.sh/uv/)
 (on Windows, use `.venv\Scripts\...` instead of `.venv/bin/...`):
