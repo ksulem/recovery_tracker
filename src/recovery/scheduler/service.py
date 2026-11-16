@@ -23,6 +23,7 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from recovery import winddown
 from recovery.clock import local_now
 from recovery.conversation.engine import CheckinEngine
 from recovery.db.models import User
@@ -36,7 +37,11 @@ from recovery.timeparse import in_quiet_hours
 logger = logging.getLogger(__name__)
 
 # Extra senders plugged in by other modules (e.g. the session brief).
-Sender = Callable[[Bot, AsyncSession, User], Awaitable[None]]
+# Extra senders return False when there was nothing to send (e.g. nothing is
+# parked before the walk); None or True count as sent.
+Sender = Callable[[Bot, AsyncSession, User], Awaitable[bool | None]]
+# Kinds that are only scheduled when a sender for them is plugged in.
+NEEDS_SENDER = {PromptKind.SESSION_BRIEF, PromptKind.PRE_WALK}
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 CHECKIN_OF = {
@@ -66,7 +71,9 @@ def add_minutes(at: time, minutes: int) -> time | None:
     return time(total // 60, total % 60)
 
 
-def planned_jobs(user: User, reminder_delay_minutes: int) -> dict[PromptKind, CronTrigger]:
+def planned_jobs(
+    user: User, reminder_delay_minutes: int, evening_reminder_delay_minutes: int | None = None
+) -> dict[PromptKind, CronTrigger]:
     tz = user.timezone
     jobs = {
         PromptKind.MORNING: CronTrigger(
@@ -77,11 +84,12 @@ def planned_jobs(user: User, reminder_delay_minutes: int) -> dict[PromptKind, Cr
         ),
     }
     if user.reminders_enabled:
-        for kind, base in (
-            (PromptKind.MORNING_REMINDER, user.morning_time),
-            (PromptKind.EVENING_REMINDER, user.evening_time),
+        evening_delay = evening_reminder_delay_minutes or reminder_delay_minutes
+        for kind, base, delay in (
+            (PromptKind.MORNING_REMINDER, user.morning_time, reminder_delay_minutes),
+            (PromptKind.EVENING_REMINDER, user.evening_time, evening_delay),
         ):
-            at = add_minutes(base, reminder_delay_minutes)
+            at = add_minutes(base, delay)
             if at is not None:
                 jobs[kind] = CronTrigger(hour=at.hour, minute=at.minute, timezone=tz)
     if user.session_weekday is not None and user.session_time is not None:
@@ -90,6 +98,10 @@ def planned_jobs(user: User, reminder_delay_minutes: int) -> dict[PromptKind, Cr
         )
         jobs[PromptKind.SESSION_BRIEF] = CronTrigger(
             day_of_week=DAYS[day], hour=at.hour, minute=at.minute, timezone=tz
+        )
+    if user.walk_time is not None:
+        jobs[PromptKind.PRE_WALK] = CronTrigger(
+            hour=user.walk_time.hour, minute=user.walk_time.minute, timezone=tz
         )
     return jobs
 
@@ -102,6 +114,7 @@ class CheckinScheduler:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         reminder_delay_minutes: int = 120,
+        evening_reminder_delay_minutes: int | None = None,
         catchup_window_minutes: int = 120,
         extra_senders: dict[PromptKind, Sender] | None = None,
     ) -> None:
@@ -109,6 +122,7 @@ class CheckinScheduler:
         self.bot = bot
         self.session_factory = session_factory
         self.reminder_delay_minutes = reminder_delay_minutes
+        self.evening_reminder_delay_minutes = evening_reminder_delay_minutes
         self.catchup_window = timedelta(minutes=catchup_window_minutes)
         self.extra_senders = extra_senders or {}
 
@@ -127,8 +141,9 @@ class CheckinScheduler:
         for job in self.scheduler.get_jobs():
             if job.id.startswith(prefix):
                 job.remove()
-        for kind, trigger in planned_jobs(user, self.reminder_delay_minutes).items():
-            if kind == PromptKind.SESSION_BRIEF and kind not in self.extra_senders:
+        jobs = planned_jobs(user, self.reminder_delay_minutes, self.evening_reminder_delay_minutes)
+        for kind, trigger in jobs.items():
+            if kind in NEEDS_SENDER and kind not in self.extra_senders:
                 continue
             self.scheduler.add_job(
                 self.fire,
@@ -186,8 +201,7 @@ class CheckinScheduler:
 
     async def _send(self, session: AsyncSession, user: User, kind: PromptKind) -> bool:
         if kind in self.extra_senders:
-            await self.extra_senders[kind](self.bot, session, user)
-            return True
+            return await self.extra_senders[kind](self.bot, session, user) is not False
         checkin_type = CHECKIN_OF.get(kind)
         if checkin_type is None:
             return False
@@ -198,7 +212,7 @@ class CheckinScheduler:
             await send_offer(self.bot, user.telegram_id, checkin_type)
             return True
         # Reminder.
-        if not user.reminders_enabled:
+        if not user.reminders_enabled or winddown.is_late(user):
             return False
         if in_quiet_hours(
             local_now(user.timezone).time(), user.quiet_hours_start, user.quiet_hours_end

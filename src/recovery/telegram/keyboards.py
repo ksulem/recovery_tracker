@@ -29,6 +29,9 @@ def question_keyboard(
     def cb(op: str, value: str = "") -> str:
         return AnswerCb(c=cid, q=question.id, op=op, v=value).pack()
 
+    if question.kind == Kind.PARK:
+        # The closing step: one way out, no "finish" (it is the last question).
+        return build([[(ru.BTN_NOTHING, cb("skip"))]])
     rows: list[list[tuple[str, str]]] = []
     if question.kind == Kind.SCALE_10:
         buttons = [(str(n), cb("set", str(n))) for n in range(11)]
@@ -36,7 +39,7 @@ def question_keyboard(
     elif question.kind == Kind.PERCENT:
         buttons = [(f"{n}%", cb("set", str(n))) for n in range(0, 101, 10)]
         rows = [buttons[:6], buttons[6:]]
-    elif question.kind in (Kind.SCALE_5, Kind.CHOICE, Kind.GATE):
+    elif question.kind in (Kind.SCALE_5, Kind.CHOICE, Kind.GATE, Kind.THOUGHT):
         buttons = [(o.label, cb("set", o.value)) for o in question.options]
         short = all(len(o.label) <= 12 for o in question.options)
         rows = chunk(buttons, 3) if short else chunk(buttons, 1)

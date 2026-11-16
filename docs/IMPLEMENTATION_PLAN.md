@@ -370,3 +370,127 @@ resources, not instead of them (§6.3: no single averaged score).
 - `/week` and the session brief get a "Батарейка" section: each day's charges
   side by side, and a count of mornings at or below the reserve. Counts only,
   no averages.
+
+---
+
+## Addendum 2: plan after the first week of use
+
+Inputs: a review of the first week (done with ChatGPT), the owner's notes from
+the psychologist session, and the owner's own observations. Every change below
+keeps the original guardrails: observe first, no conclusions from one episode,
+counts instead of averages, no evaluation of productivity, everything skippable.
+
+### Phase A — evening wind-down and parked thoughts (`feature/evening-wind-down`)
+
+**Why.** The owner tends to review the day right before sleep; anxious thoughts
+then keep going late into the night and end in videos, impulse purchases or
+browsing shop catalogues to fall asleep. Goal agreed with the psychologist: the
+day review happens at least an hour before sleep, and thoughts that come up can
+be written down and dealt with later.
+
+**Principle.** Late in the evening the bot must not become one more screen: no
+questions, reports or reminders after the wind-down boundary, one-line replies.
+
+| Local time (owner's setup) | Behaviour |
+|---|---|
+| 09:30 | Morning check-in as before. Parked thoughts never appear in the morning: the morning walk is for tuning into the day |
+| walk time, 18:45 | Only if something is parked: "можно взять с собой одну мысль — а можно просто погулять". **One** thought on request, never a list, nothing to decide during the walk |
+| 20:45 | Evening check-in (after the walk). Ends with a closing step: what to do with the walk thought (обдумано / пусть полежит / на сессию / неактуально), "что-то ещё отложить на завтра?", "День закрыт 🌙" |
+| +45 min, 21:30 | One gentle evening reminder (morning keeps its 2 h delay) |
+| bedtime − 1 h, 22:00 | Late mode until bedtime + 7 h: no reminders or walk offers; any free text is parked with a one-line reply; `/evening` offers a short version (battery + what to park) |
+| 23:00 | Bedtime |
+
+- `/later [text]` parks a thought; without text it lists open thoughts and
+  offers to review them one at a time. Free-text notes get a "🅿️ На потом"
+  button in the daytime.
+- A thought postponed three times gets one gentle offer to move it to the
+  session list. "Пусть полежит" is always a fine answer, and unresolved
+  thoughts are never counted as failures.
+- Settings: bedtime and evening walk time (both optional; without them the
+  corresponding behaviour is off). If the evening check-in is less than an hour
+  before sleep, `/settings` offers to move it.
+- Reports: when the evening check-in was finished relative to bedtime (count of
+  evenings an hour or more before sleep), parked / resolved / open thoughts.
+  Counts only: no streaks, no "success rate".
+- Data: `users.bedtime`, `users.walk_time`; `checkins.bedtime` snapshot and
+  `checkins.flow_variant` ('short'); table `parked_thoughts` (with a `seq`
+  identity column, so thoughts written in one message keep their order);
+  prompt kind `pre_walk`. Migration `0004`.
+
+### Phase B — question engine (`feature/question-engine`)
+
+No visible change; prerequisites for C:
+- conditional questions (asked only if an earlier answer contains X);
+- questions asked every N days (deterministic by local date);
+- an exclusive "Ничего из этого" option, so "none" differs from "skipped";
+- generic per-question feature toggles and a settings screen for optional
+  question sets (the battery toggle moves onto it).
+
+### Phase C — day episodes and the week-2 hypotheses (`feature/evening-hypotheses`)
+
+**Problem found in week 1.** "Что забирало силы" and "что помогало" are two
+separate whole-day lists with coarse categories. "Общение" often appears in
+both, and that can't be interpreted: was it one conversation or two, which kind,
+and what exactly did it give or take?
+
+**Episodes instead of two lists.**
+1. "Что было заметного сегодня?" — one multi-select. Social contact is split:
+   общение с близкими · по работе / обязательное · много людей, новые люди;
+   plus работа, быт, прогулка/движение, хобби, сериалы/книги/игры, побыть в
+   одиночестве, сон/отдых, переживания, решения, **требования к себе** (new:
+   internal demands — to develop, progress, be productive, cope alone).
+2. Per selected item (at most 3 per evening): "как это было?" — Дало силы ·
+   Забрало силы · И то, и другое · Почти не повлияло.
+3. Only for "И то, и другое": "Что дало?" / "Что забрало?" in terms of the
+   spec's resources — эмоционально · телу · социальный ресурс · голове.
+4. Optional for social contact and chores: "по своему желанию или по
+   необходимости?".
+
+Stored in one `day_episodes` table with a direction (gave / took / both /
+neutral) and affected resources. Old `load_events` / `recovery_events` stay and
+are shown as "took" / "gave" in reports.
+
+**Other evening additions** (all in a toggleable "hypotheses" set):
+- "Сколько сегодня было обязательств?" Не было · Немного · Много.
+- Emotional background, separate from load: "Есть ли что-то, о чём постоянно
+  думаешь, или ситуация, которая продолжает занимать?" Нет · Немного · Да,
+  сильно; if yes, an optional short note with a "📌 На сессию" button.
+- Pressure on oneself, every other evening: "Было ли сегодня что-то из этого?"
+  надо было быть продуктивнее · вина за отдых · казалось, что недостаточно
+  стараюсь восстановиться · ничего из этого. Recorded only, never commented.
+- Optional morning questions (pending the owner's decision): "Как получилось
+  заснуть?" and "Было ли перед сном: видео/сериалы · покупки или каталоги ·
+  соцсети · ничего из этого".
+
+### Phase D — evening → next morning report (`feature/next-morning-report`)
+
+A section in `/week` and the session brief pairing each evening (battery,
+obligations, episodes, emotional background, pressure, day-review time) with
+the night (sleep, falling asleep) and the next morning (battery, physical
+energy). Per-episode counts, e.g. "общение с близкими — 5: дало 3, забрало 1,
+оба 1; по желанию: дало 3 из 3". Fewer than 3 occurrences → "данных
+недостаточно". Wording: "возможно, связано" / "похоже на повторяющуюся
+закономерность" only.
+
+Week-2 hypotheses this phase makes observable (not "proves"):
+
+| Hypothesis | Data |
+|---|---|
+| Emotional experiences drain independently of physical load | emotional background vs battery and resources |
+| Absence of obligations helps recovery | days with and without obligations → next morning |
+| Self-chosen activity is useful | episodes "по желанию / по необходимости" and their effect |
+| Inner pressure gets in the way of rest | pressure signals, "требования к себе" |
+| An evening improvement doesn't always last until morning | evening → next morning pairs |
+
+No changes to the owner's routine are suggested from this data until 7–14 more
+days are collected.
+
+### Decisions and defaults
+
+- Battery: merged into `dev` (before phase A).
+- Pressure question: every other evening. Episodes rated: at most 3 per evening.
+- Bedtime: one for all days (23:00). Walk offer: evening only (18:45), weekends
+  the same; never in the morning.
+- Late mode: free text is parked automatically with a one-line reply.
+- Open: whether to ask about videos/purchases/catalogues before sleep; the
+  final episode list.

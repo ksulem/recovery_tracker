@@ -24,6 +24,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     SmallInteger,
@@ -33,6 +34,7 @@ from sqlalchemy import (
     Uuid,
     text,
 )
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
@@ -48,6 +50,7 @@ from recovery.domain import (
     DayOutlook,
     DiscussionStatus,
     Effect,
+    FlowVariant,
     InputType,
     Intensity,
     LoadCategory,
@@ -61,6 +64,7 @@ from recovery.domain import (
     SleepQuality,
     Source,
     Symptom,
+    ThoughtStatus,
 )
 
 
@@ -147,6 +151,10 @@ class User(Base):
     battery_color: Mapped[str] = mapped_column(
         Text, nullable=False, default=BatteryColor.GREEN, server_default=text("'green'")
     )
+    # Evening wind-down: an hour before bedtime the bot goes quiet and parks any
+    # thought for later. Both optional: without them that behaviour is off.
+    bedtime: Mapped[time | None] = mapped_column(Time)
+    walk_time: Mapped[time | None] = mapped_column(Time)
     created_at_utc: Mapped[datetime] = utc_column(default=True)
 
 
@@ -168,6 +176,7 @@ class Checkin(LocalTimeMixin, Base):
         one_of("day_outlook", DayOutlook),
         one_of("pleasant_desire", PleasantDesire),
         one_of("pleasant_energy", PleasantEnergy),
+        one_of("flow_variant", FlowVariant),
         # At most one live morning and one live evening check-in per local day;
         # "start over" abandons the old one. Ad-hoc check-ins are unlimited.
         Index(
@@ -207,6 +216,11 @@ class Checkin(LocalTimeMixin, Base):
     expected_heavy_load: Mapped[str | None] = mapped_column(Text)
     tomorrow_note: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
+    # NULL = the regular flow; 'short' = the late-evening version.
+    flow_variant: Mapped[str | None] = mapped_column(Text)
+    # Bedtime at the time of the check-in (snapshot), to report when the day
+    # review happened relative to sleep even if the setting changes later.
+    bedtime: Mapped[time | None] = mapped_column(Time)
 
     # question id -> "answered" | "skipped". Distinguishes "skipped" from
     # "never asked" (both leave the value NULL) and drives resume.
@@ -376,6 +390,43 @@ class DiscussionItem(LocalTimeMixin, Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, default=DiscussionStatus.OPEN)
     session_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("therapy_sessions.id", ondelete="SET NULL")
+    )
+    resolved_at_utc: Mapped[datetime | None] = utc_column(nullable=True)
+
+
+class ParkedThought(LocalTimeMixin, Base):
+    """A thought written down to be dealt with later ("на потом").
+
+    Note: the ``text`` column shadows ``sqlalchemy.text`` inside this class body,
+    hence ``sql_text`` for server defaults.
+    """
+
+    __tablename__ = "parked_thoughts"
+    __table_args__ = (
+        one_of("status", ThoughtStatus),
+        Index("ix_parked_thoughts_user_status", "user_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    # Insertion order: several thoughts parked from one message share a
+    # timestamp, but must keep the order they were written in.
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), nullable=False)
+    user_id: Mapped[uuid.UUID] = user_fk()
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("messages.id", ondelete="SET NULL")
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default=ThoughtStatus.OPEN)
+    # Local date it was last taken on the evening walk (one thought per day).
+    taken_on: Mapped[date | None] = mapped_column(Date)
+    postponed_count: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default=sql_text("0")
+    )
+    session_suggested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sql_text("false")
+    )
+    discussion_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("discussion_items.id", ondelete="SET NULL")
     )
     resolved_at_utc: Mapped[datetime | None] = utc_column(nullable=True)
 

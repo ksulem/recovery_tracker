@@ -17,6 +17,7 @@ from recovery.db.models import DiscussionItem, TherapySession, User
 from recovery.domain import DiscussionStatus
 from recovery.reports.digest import (
     coverage_line,
+    day_review_line,
     fmt_period,
     last_session,
     open_discussion_items,
@@ -47,6 +48,7 @@ async def send_session_brief(bot: Bot, session: AsyncSession, user: User) -> Non
         ru.SESSION_TITLE.format(period=fmt_period(brief.start, brief.end)),
         coverage_line(brief.digest),
         *([reserve] if (reserve := reserve_count_line(brief.digest)) else []),
+        *([review] if (review := day_review_line(brief.digest)) else []),
         "",
     ]
     if brief.items:

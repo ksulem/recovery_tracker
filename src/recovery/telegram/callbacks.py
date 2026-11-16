@@ -34,7 +34,7 @@ def short_id(checkin_id: object) -> str:
 
 
 class NoteCb(CallbackData, prefix="nt"):
-    op: str  # disc (add the saved note to the session list)
+    op: str  # disc (to the session list) | park (to parked thoughts)
     m: str  # message id, hex
 
 
@@ -49,3 +49,12 @@ class DeleteCb(CallbackData, prefix="del"):
 class BatteryCb(CallbackData, prefix="bt"):
     op: str  # toggle | reserve | setreserve | color | setcolor | back
     v: str = ""
+
+
+class ThoughtCb(CallbackData, prefix="th"):
+    # take | other | walk — the pre-walk offer
+    # review | act        — reviewing open thoughts one at a time (/later)
+    # ssn | keep          — the one-time "move it to the session?" offer
+    op: str
+    t: str = ""  # thought id, hex
+    a: str = ""  # for "act": done | later | session | drop

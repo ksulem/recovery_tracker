@@ -129,6 +129,7 @@ class PromptKind(StrEnum):
     EVENING_REMINDER = "evening_reminder"
     SESSION_BRIEF = "session_brief"
     WEEKLY_REPORT = "weekly_report"
+    PRE_WALK = "pre_walk"  # offer to take one parked thought on the evening walk
 
 
 class PromptStatus(StrEnum):
@@ -165,3 +166,14 @@ class BatteryColor(StrEnum):
     BLUE = "blue"
     PURPLE = "purple"
     BROWN = "brown"
+
+
+class FlowVariant(StrEnum):
+    SHORT = "short"  # late-evening check-in: battery + what to park
+
+
+class ThoughtStatus(StrEnum):
+    OPEN = "open"
+    DONE = "done"  # обдумано
+    TO_SESSION = "to_session"  # moved to the list for the psychologist session
+    DROPPED = "dropped"  # неактуально
